@@ -18,5 +18,5 @@ export const ROLE_LABEL = Object.fromEntries(ROLES.map((r) => [r.key, r.label]))
 // Companies, in the order they are shown everywhere (the name is also the key).
 export const COMPANIES = ['א', 'ב', 'ג', 'ד', '601', '603', '605', '607', 'עיט', 'מפקדה'];
 
-export const KINDS = ['admin', 'officer', 'company'];
-export const KIND_LABEL = { admin: 'מנהל — מג״ד', officer: 'קצין מטה', company: 'משתמש פלוגתי' };
+export const KINDS = ['admin', 'officer', 'company', 'pending'];
+export const KIND_LABEL = { admin: 'מנהל — מג״ד', officer: 'קצין מטה', company: 'משתמש פלוגתי', pending: 'ממתין לשיוך' };

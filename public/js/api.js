@@ -27,4 +27,5 @@ async function request(method, url, body) {
 export const api = {
   get: (u) => request('GET', u),
   post: (u, b) => request('POST', u, b),
+  patch: (u, b) => request('PATCH', u, b),
 };

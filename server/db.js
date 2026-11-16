@@ -2,20 +2,27 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createClient } from '@libsql/client';
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS users (
+// Users log in with their full name (unique, like תיאומון). A new registration is "pending" until the
+// מג״ד gives it a permission. phone may be '' only for accounts created before phones were required.
+const USERS_TABLE = (name) => `
+CREATE TABLE IF NOT EXISTS ${name} (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  full_name TEXT NOT NULL,
-  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  full_name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  phone TEXT NOT NULL DEFAULT '' CHECK (phone = '' OR (length(phone) = 10 AND phone NOT GLOB '*[^0-9]*')),
   password_hash TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('admin','officer','company')),
+  kind TEXT NOT NULL CHECK (kind IN ('admin','officer','company','pending')),
   role_key TEXT,
   company_key TEXT,
   active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
   created_at TEXT NOT NULL,
+  onboarded_at TEXT,
+  deleted_at TEXT,
   CHECK ((kind = 'officer') = (role_key IS NOT NULL)),
   CHECK ((kind = 'company') = (company_key IS NOT NULL))
-);
+);`;
+
+const SCHEMA = `
+${USERS_TABLE('users')}
 
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY,
@@ -69,7 +76,48 @@ CREATE TRIGGER IF NOT EXISTS trg_setup_done AFTER INSERT ON users WHEN NEW.kind 
 BEGIN
   INSERT OR IGNORE INTO app_settings (key, value) VALUES ('setup_completed_at', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 END;
+CREATE TRIGGER IF NOT EXISTS trg_setup_done_update AFTER UPDATE OF kind ON users WHEN NEW.kind = 'admin'
+BEGIN
+  INSERT OR IGNORE INTO app_settings (key, value) VALUES ('setup_completed_at', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
 `;
+
+/**
+ * v1 → v2: login by full name (username dropped), phone, "pending" kind, onboarded_at, deleted_at.
+ * SQLite can't change CHECK constraints in place, so the users table is rebuilt (the documented
+ * create-copy-drop-rename procedure), all in one transaction with foreign keys off. Every row is kept;
+ * a duplicate full name gets " (2)", " (3)"… so the name stays a unique login name.
+ */
+async function migrateUsersV2(db, client) {
+  const cols = (await db.all('PRAGMA table_info(users)')).map((c) => c.name);
+  if (!cols.includes('username')) return;
+  console.log('[migration] users v2: התחברות לפי שם מלא, טלפון, ממתינים');
+  try {
+    await runRebuild(client);
+  } catch (e) {
+    try { await client.execute('ROLLBACK'); } catch { /* not in a transaction */ }
+    try { await client.execute('PRAGMA foreign_keys = ON'); } catch { /* ignore */ }
+    throw e;
+  }
+}
+function runRebuild(client) {
+  return client.executeMultiple(`
+    PRAGMA foreign_keys = OFF;
+    BEGIN;
+    DROP TABLE IF EXISTS users_new;
+    ${USERS_TABLE('users_new')}
+    INSERT INTO users_new (id, full_name, phone, password_hash, kind, role_key, company_key, active, created_at)
+      SELECT u.id,
+        CASE WHEN (SELECT COUNT(*) FROM users p WHERE p.full_name = u.full_name COLLATE NOCASE AND p.id < u.id) = 0 THEN u.full_name
+          ELSE u.full_name || ' (' || ((SELECT COUNT(*) FROM users p WHERE p.full_name = u.full_name COLLATE NOCASE AND p.id < u.id) + 1) || ')' END,
+        '', u.password_hash, u.kind, u.role_key, u.company_key, u.active, u.created_at
+      FROM users u ORDER BY u.id;
+    DROP TABLE users;
+    ALTER TABLE users_new RENAME TO users;
+    COMMIT;
+    PRAGMA foreign_keys = ON;
+  `);
+}
 
 /**
  * Small async layer over libSQL (same as תיאומון). The same code runs against
@@ -135,5 +183,7 @@ export async function openDb(dbUrl, authToken) {
   const db = new RootDb(client);
   db.storage = local ? 'file' : 'turso';
   await db.exec(SCHEMA);
+  await migrateUsersV2(db, client);
+  await db.exec(SCHEMA);   // recreates the triggers that were dropped with the old users table
   return db;
 }

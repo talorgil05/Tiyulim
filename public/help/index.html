@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>עזרה — טופס טיולים גדודי</title>
+  <meta name="theme-color" content="#0B2559">
+  <link rel="icon" href="/icons/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <script src="/js/theme-boot.js"></script>
+  <link rel="stylesheet" href="/css/app.css">
+  <link rel="stylesheet" href="/help/help.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" style="color:inherit;text-decoration:none"><img src="/icons/logo.svg" alt=""><span>טופס טיולים גדודי</span></a>
+    <div class="spacer"></div>
+    <a class="top-link" href="/">חזרה לאפליקציה</a>
+  </header>
+  <main id="main" class="help">
+    <h1>עזרה ושאלות נפוצות</h1>
+    <div class="field"><label class="sr-only" for="q">חיפוש</label><input type="search" id="q" placeholder="חיפוש בשאלות…"></div>
+    <nav class="h-topics" data-topics aria-label="נושאים"></nav>
+    <div data-faq></div>
+    <p class="muted" data-empty hidden>לא נמצאו שאלות. נסו מילה אחרת.</p>
+  </main>
+  <script type="module" src="/help/help.js"></script>
+</body>
+</html>

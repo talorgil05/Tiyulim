@@ -32,37 +32,99 @@ function client() {
     if (set) cookie = set.split(';')[0];
     return { status: res.status, data: await res.json().catch(() => null) };
   };
-  return { get: (u) => call('GET', u), post: (u, b, o) => call('POST', u, b, o) };
+  return { get: (u) => call('GET', u), post: (u, b, o) => call('POST', u, b, o), patch: (u, b) => call('PATCH', u, b) };
 }
 
 const admin = client();
 const officers = {};   // role key → client
 const companies = {};  // company → client
 
-test('first מג״ד only with the setup code, then setup is closed', async () => {
-  assert.equal((await admin.post('/api/setup', { setup_code: 'wrong-code-xxxx', full_name: 'מג״ד', username: 'magad', password: 'password1' })).status, 403);
-  const ok = await admin.post('/api/setup', { setup_code: SETUP, full_name: 'סא״ל ישראל', username: 'magad', password: 'password1' });
+const PW = 'password1';
+let phoneN = 0;
+const nextPhone = () => `05${String(10000000 + phoneN++).padStart(8, '0')}`;
+const users = async () => (await admin.get('/api/users')).data.users;
+const idOf = async (name) => (await users()).find((u) => u.full_name === name).id;
+
+test('registration: full name + phone; validation; the new account is pending', async () => {
+  const c = client();
+  assert.equal((await c.post('/api/auth/register', { full_name: 'א', phone: nextPhone(), password: PW })).status, 400);          // name too short
+  assert.equal((await c.post('/api/auth/register', { full_name: 'דני לוי', phone: '123', password: PW })).status, 400);          // phone
+  assert.equal((await c.post('/api/auth/register', { full_name: 'דני לוי', phone: nextPhone(), password: 'short' })).status, 400); // password
+  const ok = await c.post('/api/auth/register', { full_name: '  דני   לוי ', phone: '050-123 4567', password: PW });
   assert.equal(ok.status, 200);
-  assert.equal(ok.data.user.kind, 'admin');
-  assert.equal((await client().post('/api/setup', { setup_code: SETUP, full_name: 'x y', username: 'x2', password: 'password1' })).status, 409);
+  assert.equal(ok.data.user.full_name, 'דני לוי');
+  assert.equal(ok.data.user.phone, '0501234567');
+  assert.equal(ok.data.user.kind, 'pending');
+  // a kind sent in the request is ignored
+  const sneaky = await client().post('/api/auth/register', { full_name: 'מנסה להיות מגד', phone: nextPhone(), password: PW, kind: 'admin' });
+  assert.equal(sneaky.data.user.kind, 'pending');
+  // the name is the login name, so it is unique (case/space-insensitive)
+  assert.equal((await client().post('/api/auth/register', { full_name: 'דני לוי', phone: nextPhone(), password: PW })).data.code, 'name_taken');
+  // pending: no forms, no signing
+  assert.deepEqual((await c.get('/api/state')).data, { pending: true });
+  assert.equal((await c.post('/api/sign', { company: 'א' })).status, 403);
+  assert.equal((await c.get('/api/users')).status, 403);
 });
 
-test('מג״ד creates an account for every role and company; others cannot', async () => {
+test('first מג״ד: register with the one-time setup code', async () => {
+  const bad = await admin.post('/api/auth/register', { full_name: 'סא״ל ישראל', phone: nextPhone(), password: PW, setup_code: 'wrong-code-xxxx' });
+  assert.equal(bad.status, 403);
+  const ok = await admin.post('/api/auth/register', { full_name: 'סא״ל ישראל', phone: nextPhone(), password: PW, setup_code: SETUP });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.user.kind, 'admin');
+  const again = await client().post('/api/auth/register', { full_name: 'עוד מגד', phone: nextPhone(), password: PW, setup_code: SETUP });
+  assert.equal(again.data.code, 'setup_closed');
+  // login is by full name
+  assert.equal((await client().post('/api/auth/login', { full_name: 'סא״ל ישראל', password: PW })).status, 200);
+  assert.equal((await client().post('/api/auth/login', { full_name: 'סא״ל ישראל', password: 'wrong-pass' })).status, 401);
+});
+
+test('everyone registers; the מג״ד assigns each a role or company; others cannot', async () => {
   for (const r of ROLES) {
-    const res = await admin.post('/api/users', { kind: 'officer', role_key: r.key, full_name: `קצין ${r.label}`, username: `o-${r.key}`, password: 'password1' });
-    assert.equal(res.status, 200, res.data?.error);
     officers[r.key] = client();
-    assert.equal((await officers[r.key].post('/api/auth/login', { username: `o-${r.key}`, password: 'password1' })).status, 200);
+    assert.equal((await officers[r.key].post('/api/auth/register', { full_name: `קצין ${r.label}`, phone: nextPhone(), password: PW })).status, 200);
   }
-  for (const [i, c] of COMPANIES.entries()) {
-    assert.equal((await admin.post('/api/users', { kind: 'company', company_key: c, full_name: `פלוגה ${c}`, username: `c${i}`, password: 'password1' })).status, 200);
+  for (const c of COMPANIES) {
     companies[c] = client();
-    assert.equal((await companies[c].post('/api/auth/login', { username: `c${i}`, password: 'password1' })).status, 200);
+    assert.equal((await companies[c].post('/api/auth/register', { full_name: `רס״פ ${c}`, phone: nextPhone(), password: PW })).status, 200);
   }
-  assert.equal((await admin.post('/api/users', { kind: 'officer', role_key: 'lag', full_name: 'כפול', username: 'o-lag', password: 'password1' })).status, 409);
-  // a regular user cannot create users or give themselves another role
-  assert.equal((await officers.rechev.post('/api/users', { kind: 'admin', full_name: 'האקר', username: 'h', password: 'password1' })).status, 403);
+  const list = await users();
+  assert.equal(list[0].kind, 'pending');   // pending first
+  for (const r of ROLES) {
+    const res = await admin.patch(`/api/users/${list.find((u) => u.full_name === `קצין ${r.label}`).id}`, { kind: 'officer', role_key: r.key });
+    assert.equal(res.status, 200, res.data?.error);
+    assert.equal(res.data.user.role_key, r.key);
+  }
+  for (const c of COMPANIES) {
+    assert.equal((await admin.patch(`/api/users/${list.find((u) => u.full_name === `רס״פ ${c}`).id}`, { kind: 'company', company_key: c })).status, 200);
+  }
+  // bad values
+  const someone = list.find((u) => u.full_name === 'דני לוי').id;
+  assert.equal((await admin.patch(`/api/users/${someone}`, { kind: 'officer' })).status, 400);
+  assert.equal((await admin.patch(`/api/users/${someone}`, { kind: 'company', company_key: 'לא קיימת' })).status, 400);
+  // nobody else can change permissions
+  assert.equal((await officers.rechev.patch(`/api/users/${someone}`, { kind: 'admin' })).status, 403);
   assert.equal((await companies['א'].get('/api/users')).status, 403);
+  // the officer's own session now sees the officer screen
+  assert.ok(Array.isArray((await officers.rechev.get('/api/state')).data.companies));
+});
+
+test('the מג״ד can give מג״ד to anyone; the last מג״ד is protected', async () => {
+  const me = await idOf('סא״ל ישראל');
+  // only one מג״ד: can't lose the role, be deactivated or be deleted
+  assert.equal((await admin.patch(`/api/users/${me}`, { kind: 'pending' })).data.code, 'last_admin');
+  const dani = client();
+  await dani.post('/api/auth/login', { full_name: 'דני לוי', password: PW });
+  const daniId = await idOf('דני לוי');
+  assert.equal((await admin.patch(`/api/users/${daniId}`, { kind: 'admin' })).status, 200);
+  assert.equal((await dani.get('/api/users')).status, 200);   // דני is now a מג״ד
+  // דני may now remove the first מג״ד's role, but not his own when he is the last
+  assert.equal((await dani.patch(`/api/users/${me}`, { kind: 'pending' })).status, 200);
+  assert.equal((await dani.patch(`/api/users/${daniId}`, { kind: 'pending' })).data.code, 'last_admin');
+  assert.equal((await dani.patch(`/api/users/${me}`, { kind: 'admin' })).status, 200);   // and back
+  // demote דני again
+  assert.equal((await admin.patch(`/api/users/${daniId}`, { kind: 'pending' })).status, 200);
+  assert.equal((await dani.get('/api/users')).status, 403);
 });
 
 test('no signing before the first round is opened', async () => {
@@ -190,17 +252,48 @@ test('a new round starts clean; the previous one stays in history', async () => 
   assert.equal(a.approval.approver_name, 'סא״ל ישראל');
 });
 
-test('deactivated user is logged out; password reset works', async () => {
-  const users = (await admin.get('/api/users')).data.users;
-  const u = users.find((x) => x.username === 'o-klia');
-  assert.equal((await admin.post(`/api/users/${u.id}/active`, { active: false })).status, 200);
-  assert.equal((await officers.klia.get('/api/state')).status, 401);
-  assert.equal((await client().post('/api/auth/login', { username: 'o-klia', password: 'password1' })).status, 403);
-  const me = users.find((x) => x.username === 'magad');
-  assert.equal((await admin.post(`/api/users/${me.id}/active`, { active: false })).status, 409);
+test('profile: name and phone; password change logs out other sessions', async () => {
+  const other = client();
+  await other.post('/api/auth/login', { full_name: 'קצין קל״ג', password: PW });
+  const lag = officers.lag;
+  assert.equal((await lag.patch('/api/profile', { full_name: 'קצין קל״ג', phone: '12' })).status, 400);
+  assert.equal((await lag.patch('/api/profile', { full_name: 'קצין ק. רכב', phone: nextPhone() })).data.code, 'name_taken');
+  const ok = await lag.patch('/api/profile', { full_name: 'קצין קל״ג', phone: '0549998877' });
+  assert.equal(ok.data.user.phone, '0549998877');
+  assert.equal((await lag.post('/api/profile/password', { current_password: 'nope-nope', new_password: 'newpass12' })).data.code, 'bad_password');
+  assert.equal((await lag.post('/api/profile/password', { current_password: PW, new_password: 'newpass12' })).status, 200);
+  assert.equal((await lag.get('/api/state')).status, 200);     // this session stays
+  assert.equal((await other.get('/api/state')).status, 401);   // the other one is logged out
+  assert.equal((await client().post('/api/auth/login', { full_name: 'קצין קל״ג', password: PW })).status, 401);
+  assert.equal((await client().post('/api/auth/login', { full_name: 'קצין קל״ג', password: 'newpass12' })).status, 200);
+});
 
-  const k = users.find((x) => x.username === 'o-lag');
-  const { password } = (await admin.post(`/api/users/${k.id}/reset-password`)).data;
-  assert.equal((await officers.lag.get('/api/state')).status, 401);
-  assert.equal((await client().post('/api/auth/login', { username: 'o-lag', password })).status, 200);
+test('tour is remembered on the account', async () => {
+  assert.equal((await officers.klia.get('/api/auth/me')).data.user.onboarded, false);
+  await officers.klia.post('/api/onboarding/done');
+  assert.equal((await officers.klia.get('/api/auth/me')).data.user.onboarded, true);
+});
+
+test('deactivate, reset password, delete (history keeps the name)', async () => {
+  const klia = await idOf('קצין ק. קליעה');
+  assert.equal((await admin.patch(`/api/users/${klia}`, { active: false })).status, 200);
+  assert.equal((await officers.klia.get('/api/state')).status, 401);
+  assert.equal((await client().post('/api/auth/login', { full_name: 'קצין ק. קליעה', password: PW })).status, 403);
+  assert.equal((await admin.patch(`/api/users/${await idOf('סא״ל ישראל')}`, { active: false })).status, 409);   // not yourself
+
+  const { password } = (await admin.post(`/api/users/${await idOf('קצין קשר״ג')}/reset-password`)).data;
+  assert.equal((await officers.kashrag.get('/api/state')).status, 401);
+  assert.equal((await client().post('/api/auth/login', { full_name: 'קצין קשר״ג', password })).status, 200);
+
+  // ק. רכב signed in round 1 and round 2; delete him
+  const rechev = await idOf('קצין ק. רכב');
+  assert.equal((await admin.post(`/api/users/${rechev}/delete`, { confirm_name: 'שם אחר' })).status, 400);
+  assert.equal((await admin.post(`/api/users/${rechev}/delete`, { confirm_name: 'קצין ק. רכב' })).status, 200);
+  assert.equal((await officers.rechev.get('/api/state')).status, 401);
+  assert.equal((await users()).some((u) => u.id === rechev), false);
+  const hist = (await admin.get('/api/rounds')).data.rounds;
+  const old = (await admin.get(`/api/rounds/${hist[hist.length - 1].id}`)).data;
+  assert.equal(old.forms.find((f) => f.company === 'א').roles.find((r) => r.key === 'rechev').signer_name, 'קצין ק. רכב');
+  // the name is free again
+  assert.equal((await client().post('/api/auth/register', { full_name: 'קצין ק. רכב', phone: nextPhone(), password: PW })).status, 200);
 });

@@ -1,0 +1,16 @@
+.help { max-width: 760px; }
+.help h1 { color: var(--navy); }
+.h-topics { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
+.h-topic { display: inline-flex; align-items: center; gap: .35rem; padding: .45rem .8rem; border-radius: 999px; background: var(--card); border: 1.5px solid var(--navy-line); color: var(--navy); text-decoration: none; font-weight: 700; font-size: .92rem; }
+.h-section { margin-bottom: 1.4rem; scroll-margin-top: 76px; }
+.h-section h2 { display: flex; align-items: center; gap: .45rem; color: var(--navy); font-size: 1.2rem; }
+.h-q { background: var(--card); border: 1px solid var(--line); border-radius: 12px; margin-bottom: .45rem; }
+.h-q summary { cursor: pointer; padding: .8rem 1rem; font-weight: 700; list-style: none; display: flex; gap: .5rem; }
+.h-q summary::before { content: '›'; color: var(--orange); font-weight: 900; transform: rotate(180deg); transition: transform .15s; }
+.h-q[open] summary::before { transform: rotate(90deg); }
+.h-q summary::-webkit-details-marker { display: none; }
+.h-a { padding: 0 1rem .9rem; color: var(--ink-2); }
+.h-a ol, .h-a ul { margin: .3rem 0; padding-inline-start: 1.3rem; }
+.h-a li { margin: .2rem 0; }
+.h-section.flash { animation: flash 1.2s ease-out; }
+@keyframes flash { from { background: var(--orange-soft); } to { background: transparent; } }

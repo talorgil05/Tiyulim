@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
 import { hashPassword, verifyPassword, dummyVerify, newToken, tokenHash, randomPassword, AttemptLimiter } from './auth.js';
 import { ROLES, ROLE_KEYS, ROLE_LABEL, COMPANIES, KINDS, KIND_LABEL } from './constants.js';
+import { normalizeName, isValidName, NAME_TAKEN_MSG } from './names.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -22,23 +23,29 @@ const notFound = (msg = 'לא נמצא') => new HttpError(404, msg, 'not_found')
 const conflict = (msg, code = 'conflict') => new HttpError(409, msg, code);
 
 // ---------- validation ----------
-const text = (v, field, { min = 1, max = 60 } = {}) => {
-  const s = typeof v === 'string' ? v.trim().replace(/\s+/g, ' ') : '';
-  if (s.length < min) throw bad(`יש למלא ${field}`);
-  if (s.length > max) throw bad(`${field} ארוך מדי`);
-  return s;
-};
 const password = (v) => {
   if (typeof v !== 'string' || v.length < 8 || v.length > 200) throw bad('סיסמה חייבת להכיל לפחות 8 תווים', 'password');
   return v;
 };
 const companyKey = (v) => { if (!COMPANIES.includes(v)) throw bad('פלוגה לא קיימת', 'company'); return v; };
 const roleKey = (v) => { if (!ROLE_KEYS.includes(v)) throw bad('תפקיד לא קיים', 'role'); return v; };
+/** Full name — also the login name (there is no separate username), as in תיאומון. */
+const fullName = (v) => {
+  const s = normalizeName(v);
+  if (!s) throw bad('יש למלא שם מלא', 'full_name');
+  if (!isValidName(s)) throw bad('שם מלא: 2–40 תווים, מתחיל באות (מותר גם מספרים, מקף, גרש ונקודה)', 'full_name');
+  return s;
+};
+const phone10 = (v) => {
+  const s = typeof v === 'string' ? v.replace(/[\s-]/g, '') : '';
+  if (!/^\d{10}$/.test(s)) throw bad('מספר טלפון חייב להכיל בדיוק 10 ספרות', 'phone');
+  return s;
+};
 
 const publicUser = (u) => u && ({
-  id: u.id, full_name: u.full_name, username: u.username, kind: u.kind, kind_label: KIND_LABEL[u.kind],
+  id: u.id, full_name: u.full_name, phone: u.phone, kind: u.kind, kind_label: KIND_LABEL[u.kind],
   role_key: u.role_key, role_label: u.role_key ? ROLE_LABEL[u.role_key] : null, company_key: u.company_key,
-  active: !!u.active, created_at: u.created_at,
+  active: !!u.active, created_at: u.created_at, onboarded: !!u.onboarded_at,
 });
 
 /**
@@ -67,6 +74,9 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
   const setupOpen = async (h = db) => !!setupSecret && !(await h.get(`SELECT 1 AS x FROM app_settings WHERE key = 'setup_completed_at'`));
 
   const loginLimiter = new AttemptLimiter({ max: 8 });
+  // a whole company may sign up together from one shared network (one public IP)
+  const registerLimiter = new AttemptLimiter({ max: 150, windowMs: 60 * 60 * 1000 });
+  const userById = (id) => db.get('SELECT * FROM users WHERE id = ?', id);
 
   // ---------- live updates (server-sent events) ----------
   const sseClients = new Set();
@@ -95,7 +105,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
     const row = await db.get('SELECT u.*, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?', tokenHash(token));
     if (!row) return null;
     if (row.expires_at < nowIso()) { await db.run('DELETE FROM sessions WHERE token_hash = ?', tokenHash(token)); return null; }
-    if (!row.active) return null;
+    if (!row.active || row.deleted_at) return null;
     return row;
   }
   async function startSession(res, req, userId) {
@@ -148,31 +158,49 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
   route('GET', '/api/meta', PUBLIC, async () => ({ roles: ROLES, companies: COMPANIES, kinds: KINDS.map((k) => ({ key: k, label: KIND_LABEL[k] })) }));
   route('GET', '/api/setup/status', PUBLIC, async () => ({ open: await setupOpen() }));
 
-  /** First מג״ד: only with the secret setup code, only while no מג״ד exists. */
-  route('POST', '/api/setup', PUBLIC, async ({ body, req, res }) => {
+  /**
+   * Registration, like תיאומון: full name (= login name) + phone + password. A new account is
+   * "pending" — it can't see or sign anything until the מג״ד gives it a permission. The kind is never
+   * taken from the request. Only the secret one-time setup code makes the first מג״ד.
+   */
+  route('POST', '/api/auth/register', PUBLIC, async ({ body, req, res }) => {
     const ip = clientIp(req);
-    if (setupLimiter.blocked(ip)) throw new HttpError(429, 'יותר מדי ניסיונות. נסו שוב בעוד שעה', 'rate');
-    const data = { full_name: text(body.full_name, 'שם מלא'), username: text(body.username, 'שם משתמש', { max: 40 }), password: password(body.password) };
+    if (registerLimiter.blocked(ip)) throw new HttpError(429, 'יותר מדי ניסיונות הרשמה. נסו שוב מאוחר יותר', 'rate');
+    registerLimiter.fail(ip);
+    const data = { full_name: fullName(body.full_name), phone: phone10(body.phone), password: password(body.password) };
+    if (await db.get('SELECT 1 AS x FROM users WHERE full_name = ?', data.full_name)) throw conflict(NAME_TAKEN_MSG, 'name_taken');
     const hash = await hashPassword(data.password);
-    const id = await db.tx(async (t) => {
-      if (!(await setupOpen(t))) throw conflict('הקמת המערכת כבר הושלמה. קוד ההקמה אינו פעיל יותר', 'setup_closed');
-      if (!codeMatches(body.setup_code)) { setupLimiter.fail(ip); throw new HttpError(403, 'קוד ההקמה שגוי', 'bad_setup_code'); }
-      if (await t.get('SELECT 1 AS x FROM users WHERE username = ?', data.username)) throw conflict('שם המשתמש כבר תפוס', 'username_taken');
-      return (await t.run(`INSERT INTO users (full_name, username, password_hash, kind, created_at) VALUES (?, ?, ?, 'admin', ?)`,
-        data.full_name, data.username, hash, nowIso())).lastInsertRowid;
-    });
+    const wantsSetup = typeof body.setup_code === 'string' && body.setup_code.trim() !== '';
+    let id;
+    try {
+      id = await db.tx(async (t) => {
+        let kind = 'pending';
+        if (wantsSetup) {
+          if (setupLimiter.blocked(ip)) throw new HttpError(429, 'יותר מדי ניסיונות. נסו שוב בעוד שעה', 'rate');
+          if (!(await setupOpen(t))) throw conflict('הקמת המערכת כבר הושלמה. קוד ההקמה אינו פעיל יותר', 'setup_closed');
+          if (!codeMatches(body.setup_code)) { setupLimiter.fail(ip); throw new HttpError(403, 'קוד ההקמה שגוי', 'bad_setup_code'); }
+          kind = 'admin';
+        }
+        return (await t.run('INSERT INTO users (full_name, phone, password_hash, kind, created_at) VALUES (?, ?, ?, ?, ?)',
+          data.full_name, data.phone, hash, kind, nowIso())).lastInsertRowid;
+      });
+    } catch (e) {
+      if (String(e.message).includes('UNIQUE')) throw conflict(NAME_TAKEN_MSG, 'name_taken');
+      throw e;
+    }
     await startSession(res, req, id);
-    return { user: publicUser(await db.get('SELECT * FROM users WHERE id = ?', id)) };
+    changed();   // the מג״ד's users tab shows the new pending account at once
+    return { user: publicUser(await userById(id)) };
   });
 
   route('POST', '/api/auth/login', PUBLIC, async ({ body, req, res }) => {
-    const uname = typeof body.username === 'string' ? body.username.trim() : '';
+    const name = normalizeName(body.full_name);
     const pw = typeof body.password === 'string' ? body.password : '';
-    const key = `${clientIp(req)}|${uname.toLowerCase()}`;
+    const key = `${clientIp(req)}|${name.toLowerCase()}`;
     if (loginLimiter.blocked(key)) throw new HttpError(429, 'יותר מדי ניסיונות התחברות. נסו שוב בעוד כמה דקות', 'rate');
-    const u = uname ? await db.get('SELECT * FROM users WHERE username = ?', uname) : null;
+    const u = name ? await db.get('SELECT * FROM users WHERE full_name = ? AND deleted_at IS NULL', name) : null;
     const ok = u ? await verifyPassword(pw, u.password_hash) : await dummyVerify(pw);
-    if (!ok) { loginLimiter.fail(key); throw new HttpError(401, 'שם משתמש או סיסמה שגויים', 'bad_credentials'); }
+    if (!ok) { loginLimiter.fail(key); throw new HttpError(401, 'שם מלא או סיסמה שגויים', 'bad_credentials'); }
     if (!u.active) throw new HttpError(403, 'החשבון מושבת. פנו למג״ד', 'inactive');
     loginLimiter.reset(key);
     await startSession(res, req, u.id);
@@ -188,6 +216,39 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
 
   route('GET', '/api/auth/me', ANY, async ({ user }) => ({ user: publicUser(user) }));
 
+  // --- profile (every user, including pending) ---
+  route('PATCH', '/api/profile', ANY, async ({ user, body }) => {
+    const data = { full_name: fullName(body.full_name), phone: phone10(body.phone) };
+    try {
+      await db.run('UPDATE users SET full_name = ?, phone = ? WHERE id = ?', data.full_name, data.phone, user.id);
+    } catch (e) {
+      if (String(e.message).includes('UNIQUE')) throw conflict(NAME_TAKEN_MSG, 'name_taken');
+      throw e;
+    }
+    changed();
+    return { user: publicUser(await userById(user.id)) };
+  });
+
+  /** Change my password; every other session of mine is logged out. */
+  route('POST', '/api/profile/password', ANY, async ({ user, body, req }) => {
+    if (!(await verifyPassword(typeof body.current_password === 'string' ? body.current_password : '', user.password_hash))) {
+      throw bad('הסיסמה הנוכחית שגויה', 'bad_password');
+    }
+    const pw = password(body.new_password);
+    const keep = tokenHash(parseCookies(req)[COOKIE] || '');
+    await db.tx(async (t) => {
+      await t.run('UPDATE users SET password_hash = ? WHERE id = ?', await hashPassword(pw), user.id);
+      await t.run('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?', user.id, keep);
+    });
+    return { ok: true };
+  });
+
+  /** The first-login tour was completed or skipped: don't show it again, on any device. */
+  route('POST', '/api/onboarding/done', ANY, async ({ user }) => {
+    await db.run('UPDATE users SET onboarded_at = COALESCE(onboarded_at, ?) WHERE id = ?', nowIso(), user.id);
+    return { ok: true };
+  });
+
   /**
    * The current state, scoped strictly to who is asking:
    *  officer → own signature (own role) for every company
@@ -195,6 +256,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
    *  admin   → every company's form
    */
   route('GET', '/api/state', ANY, async ({ user }) => {
+    if (user.kind === 'pending') return { pending: true };
     const r = await shownRound();
     const round = roundView(r);
     if (user.kind === 'officer') {
@@ -274,54 +336,72 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
     return { round: roundView(r), forms: await forms(r.id, COMPANIES) };
   });
 
-  // --- מג״ד: users ---
+  // --- מג״ד: users and permissions ---
   route('GET', '/api/users', ADMIN, async () => ({
-    users: (await db.all('SELECT * FROM users ORDER BY active DESC, kind, company_key, role_key, full_name')).map(publicUser),
+    users: (await db.all(`SELECT * FROM users WHERE deleted_at IS NULL
+      ORDER BY (kind = 'pending' AND active = 1) DESC, active DESC, kind, company_key, role_key, full_name`)).map(publicUser),
   }));
 
-  route('POST', '/api/users', ADMIN, async ({ body }) => {
-    const kind = KINDS.includes(body.kind) ? body.kind : null;
-    if (!kind) throw bad('יש לבחור סוג משתמש', 'kind');
-    const data = {
-      full_name: text(body.full_name, 'שם מלא'),
-      username: text(body.username, 'שם משתמש', { max: 40 }),
-      password: password(body.password),
-      role_key: kind === 'officer' ? roleKey(body.role_key) : null,
-      company_key: kind === 'company' ? companyKey(body.company_key) : null,
-    };
-    const hash = await hashPassword(data.password);
-    let id;
-    try {
-      id = (await db.run('INSERT INTO users (full_name, username, password_hash, kind, role_key, company_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        data.full_name, data.username, hash, kind, data.role_key, data.company_key, nowIso())).lastInsertRowid;
-    } catch (e) {
-      if (String(e.message).includes('UNIQUE')) throw conflict('שם המשתמש כבר תפוס', 'username_taken');
-      throw e;
-    }
-    return { user: publicUser(await db.get('SELECT * FROM users WHERE id = ?', id)) };
+  /** Any מג״ד can give anyone any permission, including מג״ד. Only the last active מג״ד is protected. */
+  async function guardLastAdmin(t, target) {
+    if (target.kind !== 'admin' || !target.active) return;
+    const { n } = await t.get(`SELECT COUNT(*) AS n FROM users WHERE kind = 'admin' AND active = 1 AND deleted_at IS NULL AND id <> ?`, target.id);
+    if (!n) throw conflict('לא ניתן: זהו המג״ד הפעיל האחרון. קודם תנו הרשאת מג״ד למישהו אחר', 'last_admin');
+  }
+  const targetUser = async (t, id) => {
+    const u = await t.get('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL', Number(id));
+    if (!u) throw notFound('המשתמש לא נמצא');
+    return u;
+  };
+
+  route('PATCH', '/api/users/:id', ADMIN, async ({ user, params, body }) => {
+    const updated = await db.tx(async (t) => {
+      const u = await targetUser(t, params.id);
+      if (body.kind !== undefined) {
+        const kind = KINDS.includes(body.kind) ? body.kind : null;
+        if (!kind) throw bad('יש לבחור הרשאה', 'kind');
+        const rk = kind === 'officer' ? roleKey(body.role_key) : null;
+        const ck = kind === 'company' ? companyKey(body.company_key) : null;
+        if (kind !== 'admin') await guardLastAdmin(t, u);
+        await t.run('UPDATE users SET kind = ?, role_key = ?, company_key = ? WHERE id = ?', kind, rk, ck, u.id);
+      }
+      if (body.active !== undefined) {
+        const active = body.active ? 1 : 0;
+        if (!active && u.id === user.id) throw conflict('אי אפשר להשבית את החשבון שלך', 'self');
+        if (!active) { await guardLastAdmin(t, u); await t.run('DELETE FROM sessions WHERE user_id = ?', u.id); }
+        await t.run('UPDATE users SET active = ? WHERE id = ?', active, u.id);
+      }
+      return t.get('SELECT * FROM users WHERE id = ?', u.id);
+    });
+    changed();
+    return { user: publicUser(updated) };
   });
 
   route('POST', '/api/users/:id/reset-password', ADMIN, async ({ params }) => {
-    const u = await db.get('SELECT * FROM users WHERE id = ?', Number(params.id));
-    if (!u) throw notFound('המשתמש לא נמצא');
     const pw = randomPassword();
     await db.tx(async (t) => {
+      const u = await targetUser(t, params.id);
       await t.run('UPDATE users SET password_hash = ? WHERE id = ?', await hashPassword(pw), u.id);
       await t.run('DELETE FROM sessions WHERE user_id = ?', u.id);
     });
     return { password: pw };
   });
 
-  route('POST', '/api/users/:id/active', ADMIN, async ({ user, params, body }) => {
-    const id = Number(params.id);
-    if (id === user.id) throw conflict('אי אפשר להשבית את החשבון שלך', 'self');
-    const active = body.active ? 1 : 0;
-    const res = await db.tx(async (t) => {
-      const r = await t.run('UPDATE users SET active = ? WHERE id = ?', active, id);
-      if (!active) await t.run('DELETE FROM sessions WHERE user_id = ?', id);
-      return r;
+  /**
+   * Permanent delete: the name, phone and password are erased and the name becomes free.
+   * Past signatures and approvals keep the signer's name (they store it as text).
+   */
+  route('POST', '/api/users/:id/delete', ADMIN, async ({ user, params, body }) => {
+    await db.tx(async (t) => {
+      const u = await targetUser(t, params.id);
+      if (u.id === user.id) throw conflict('אי אפשר למחוק את החשבון שלך', 'self');
+      if (normalizeName(body.confirm_name) !== u.full_name) throw bad('יש להקליד את השם המלא בדיוק כדי לאשר', 'confirm');
+      await guardLastAdmin(t, u);
+      await t.run(`UPDATE users SET full_name = ?, phone = '', password_hash = '!deleted', kind = 'pending', role_key = NULL, company_key = NULL,
+        active = 0, deleted_at = ? WHERE id = ?`, `משתמש שנמחק #${u.id}`, nowIso(), u.id);
+      await t.run('DELETE FROM sessions WHERE user_id = ?', u.id);
     });
-    if (!res.changes) throw notFound('המשתמש לא נמצא');
+    changed();
     return { ok: true };
   });
 
@@ -342,7 +422,8 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
   }
   function serveStatic(req, res, pathname) {
     let rel = decodeURIComponent(pathname);
-    if (rel === '/' || !path.extname(rel)) rel = '/index.html';
+    if (rel === '/help' || rel === '/help/') rel = '/help/index.html';
+    else if (rel === '/' || !path.extname(rel)) rel = '/index.html';
     const file = path.normalize(path.join(PUBLIC_DIR, rel));
     if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end(); }
     fs.readFile(file, (err, buf) => {
