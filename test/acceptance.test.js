@@ -122,17 +122,25 @@ test('קשר״ג assigns every permission except מג״ד', async () => {
   assert.equal((await k.patch(`/api/users/${id}`, { kind: 'officer', role_key: 'chinuch' })).status, 200);
   assert.equal((await newbie.get('/api/auth/me')).data.user.role_key, 'chinuch');
   assert.equal((await k.patch(`/api/users/${id}`, { kind: 'pending' })).status, 200);
-  // not allowed: granting מג״ד, touching a מג״ד, changing himself, on/off, reset, delete
+  // not allowed: granting מג״ד, touching a מג״ד, changing himself, on/off
+  const magad = await idOf('סא״ל ישראל');
   assert.equal((await k.patch(`/api/users/${id}`, { kind: 'admin' })).data.code, 'admin_only');
-  assert.equal((await k.patch(`/api/users/${await idOf('סא״ל ישראל')}`, { kind: 'pending' })).data.code, 'admin_only');
+  assert.equal((await k.patch(`/api/users/${magad}`, { kind: 'pending' })).data.code, 'admin_only');
   assert.equal((await k.patch(`/api/users/${await idOf('קצין קשר״ג')}`, { kind: 'officer', role_key: 'rechev' })).data.code, 'self');
   assert.equal((await k.patch(`/api/users/${id}`, { active: false })).status, 403);
-  assert.equal((await k.post(`/api/users/${id}/reset-password`)).status, 403);
-  assert.equal((await k.post(`/api/users/${id}/delete`, { confirm_name: 'חייל חדש' })).status, 403);
+  // a מג״ד's password and account are off limits
+  assert.equal((await k.post(`/api/users/${magad}/reset-password`)).data.code, 'admin_only');
+  assert.equal((await k.post(`/api/users/${magad}/delete`, { confirm_name: 'סא״ל ישראל' })).data.code, 'admin_only');
+  assert.equal((await k.post(`/api/users/${await idOf('קצין קשר״ג')}/delete`, { confirm_name: 'קצין קשר״ג' })).data.code, 'self');
+  // allowed: password reset and delete of anyone else
+  const { password } = (await k.post(`/api/users/${id}/reset-password`)).data;
+  assert.equal((await newbie.get('/api/auth/me')).status, 401);
+  assert.equal((await client().post('/api/auth/login', { full_name: 'חייל חדש', password })).status, 200);
+  assert.equal((await k.post(`/api/users/${id}/delete`, { confirm_name: 'חייל חדש' })).status, 200);
+  assert.equal((await users()).some((u) => u.id === id), false);
   // and nothing else of the מג״ד's
   assert.equal((await k.post('/api/rounds/open')).status, 403);
   assert.equal((await k.get('/api/rounds')).status, 403);
-  assert.equal((await newbie.get('/api/auth/me')).data.user.kind, 'pending');
 });
 
 test('the מג״ד can give מג״ד to anyone; the last מג״ד is protected', async () => {

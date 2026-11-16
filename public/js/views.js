@@ -33,7 +33,7 @@ export async function renderUsers(ctx) {
       <span class="muted">${active.length} פעילים${pending.length ? ` · <b style="color:var(--orange-ink)">${pending.length} ממתינים לשיוך</b>` : ''}</span>
     </div>
     <p class="small muted" style="margin-top:-.4rem">כל מי שנרשם מופיע כאן כ״ממתין לשיוך״. לוחצים <b>שינוי הרשאה</b> ומשייכים לתפקיד או לפלוגה${isAdmin
-      ? ' — או נותנים הרשאת מג״ד.' : '. הרשאת מג״ד, השבתה, איפוס סיסמה ומחיקה — רק אצל המג״ד.'}</p>
+      ? ' — או נותנים הרשאת מג״ד.' : '. אפשר גם לאפס סיסמה ולמחוק משתמש. הרשאת מג״ד, חשבונות של מג״ד והשבתה — רק אצל המג״ד.'}</p>
     ${miss.length ? `<div class="missing"><b>עדיין בלי חשבון פעיל:</b> ${miss.map(esc).join(' · ')}</div>` : ''}
     <div class="field"><label class="sr-only" for="u-q">חיפוש</label>
       <input type="search" id="u-q" placeholder="חיפוש לפי שם, טלפון, תפקיד או פלוגה" value="${esc(query)}"></div>
@@ -51,10 +51,9 @@ export async function renderUsers(ctx) {
         <div class="user-meta"><span>📱 ${phoneLink(u.phone)}</span><span>נרשם ${esc(fmtStamp(u.created_at))}</span></div>
         <div class="btn-row">
           ${canEdit(u) ? '<button type="button" class="btn btn-sm btn-primary" data-perm>שינוי הרשאה</button>' : ''}
-          ${!isAdmin ? '' : `
-          ${u.id === me.id ? '' : `<button type="button" class="btn btn-sm ${u.active ? 'btn-danger' : ''}" data-toggle>${u.active ? 'השבתה' : 'הפעלה'}</button>`}
-          <button type="button" class="btn btn-sm" data-reset>איפוס סיסמה</button>
-          ${u.id === me.id ? '' : '<button type="button" class="btn btn-sm btn-danger" data-delete>מחיקה</button>'}`}
+          ${isAdmin && u.id !== me.id ? `<button type="button" class="btn btn-sm ${u.active ? 'btn-danger' : ''}" data-toggle>${u.active ? 'השבתה' : 'הפעלה'}</button>` : ''}
+          ${canEdit(u) ? '<button type="button" class="btn btn-sm" data-reset>איפוס סיסמה</button>' : ''}
+          ${canEdit(u) && u.id !== me.id ? '<button type="button" class="btn btn-sm btn-danger" data-delete>מחיקה</button>' : ''}
         </div>
       </article>`).join('') : '<p class="muted">לא נמצאו משתמשים</p>';
   };

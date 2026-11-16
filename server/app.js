@@ -387,10 +387,16 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
     return { user: publicUser(updated) };
   });
 
-  route('POST', '/api/users/:id/reset-password', ADMIN, async ({ params }) => {
+  /** The קשר״ג may reset passwords and delete users too — but never a מג״ד's account. */
+  const guardManagerTarget = (user, u) => {
+    if (user.kind !== 'admin' && u.kind === 'admin') throw new HttpError(403, 'רק מג״ד יכול לטפל בחשבון של מג״ד', 'admin_only');
+  };
+
+  route('POST', '/api/users/:id/reset-password', USER_MANAGERS, async ({ user, params }) => {
     const pw = randomPassword();
     await db.tx(async (t) => {
       const u = await targetUser(t, params.id);
+      guardManagerTarget(user, u);
       await t.run('UPDATE users SET password_hash = ? WHERE id = ?', await hashPassword(pw), u.id);
       await t.run('DELETE FROM sessions WHERE user_id = ?', u.id);
     });
@@ -401,9 +407,10 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
    * Permanent delete: the name, phone and password are erased and the name becomes free.
    * Past signatures and approvals keep the signer's name (they store it as text).
    */
-  route('POST', '/api/users/:id/delete', ADMIN, async ({ user, params, body }) => {
+  route('POST', '/api/users/:id/delete', USER_MANAGERS, async ({ user, params, body }) => {
     await db.tx(async (t) => {
       const u = await targetUser(t, params.id);
+      guardManagerTarget(user, u);
       if (u.id === user.id) throw conflict('אי אפשר למחוק את החשבון שלך', 'self');
       if (normalizeName(body.confirm_name) !== u.full_name) throw bad('יש להקליד את השם המלא בדיוק כדי לאשר', 'confirm');
       await guardLastAdmin(t, u);
