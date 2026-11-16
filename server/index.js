@@ -5,6 +5,8 @@ import { createApp } from './app.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3100);
 const HOST = process.env.HOST || '0.0.0.0';
+// Values pasted into the host's dashboard often carry a trailing newline or spaces: trim them.
+for (const k of ['TURSO_DATABASE_URL', 'TURSO_AUTH_TOKEN', 'SETUP_CODE', 'DB_PATH']) if (process.env[k] !== undefined) process.env[k] = process.env[k].trim();
 // Production: Turso (TURSO_DATABASE_URL + TURSO_AUTH_TOKEN). Development: a local file.
 const DB_URL = process.env.TURSO_DATABASE_URL || process.env.DB_PATH || path.join(__dirname, '..', 'data', 'tiyulim.db');
 

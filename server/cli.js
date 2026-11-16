@@ -7,6 +7,7 @@ import { openDb } from './db.js';
 import { hashPassword, randomPassword } from './auth.js';
 import { ROLES, COMPANIES } from './constants.js';
 
+for (const k of ['TURSO_DATABASE_URL', 'TURSO_AUTH_TOKEN', 'DB_PATH']) if (process.env[k] !== undefined) process.env[k] = process.env[k].trim();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_URL = process.env.TURSO_DATABASE_URL || process.env.DB_PATH || path.join(__dirname, '..', 'data', 'tiyulim.db');
 const [cmd, username, fullName] = process.argv.slice(2);
