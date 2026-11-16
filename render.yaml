@@ -1,0 +1,25 @@
+# Render Blueprint (free web service), same setup as תיאומון. Data lives in Turso, not on Render's disk.
+# Values marked sync: false are entered in the Render dashboard (never committed here).
+services:
+  - type: web
+    name: tiyulim
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci --omit=dev
+    startCommand: node server/index.js
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: COOKIE_SECURE
+        value: "1"
+      - key: TRUST_PROXY
+        value: "1"
+      - key: TURSO_DATABASE_URL     # libsql://<db>-<org>.turso.io
+        sync: false
+      - key: TURSO_AUTH_TOKEN       # Turso database token (secret)
+        sync: false
+      - key: SETUP_CODE             # secret one-time code (12+ chars) for creating the first מג״ד
+        sync: false

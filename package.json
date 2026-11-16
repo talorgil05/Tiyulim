@@ -1,0 +1,18 @@
+{
+  "name": "tiyulim",
+  "version": "1.0.0",
+  "description": "טופס טיולים גדודי — חתימות קציני מטה לפני יציאת פלוגות הביתה",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "create-admin": "node server/cli.js create-admin",
+    "reset-password": "node server/cli.js reset-password",
+    "seed-demo": "node server/cli.js seed-demo"
+  },
+  "dependencies": {
+    "@libsql/client": "0.18.0"
+  }
+}
