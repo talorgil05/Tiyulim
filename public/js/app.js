@@ -23,7 +23,8 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').cat
   if (me) await enter(); else renderLogin();
 })();
 
-const TABS = () => (me.kind === 'admin' ? ['round', 'users', 'history', 'profile'] : ['round', 'profile']);
+const TABS = () => (me.kind === 'admin' ? ['round', 'users', 'history', 'profile']
+  : me.can_manage_users ? ['round', 'users', 'profile'] : ['round', 'profile']);
 function tabFromHash() {
   const t = location.hash.replace('#/', '') || 'round';
   return TABS().includes(t) ? t : 'round';
@@ -48,7 +49,7 @@ const ctx = {
 
 /** Draw the current tab (fetching what it needs). */
 async function show() {
-  if (me.kind === 'admin') pendingCount = (await api.get('/api/users').catch(() => ({ users: [] }))).users.filter((u) => u.kind === 'pending' && u.active).length;
+  if (me.can_manage_users) pendingCount = (await api.get('/api/users').catch(() => ({ users: [] }))).users.filter((u) => u.kind === 'pending' && u.active).length;
   if (tab === 'profile') return renderProfile(ctx);
   if (tab === 'users') return renderUsers(ctx);
   if (tab === 'history') return renderHistory(ctx);
@@ -157,9 +158,11 @@ async function renderLogin(mode = 'login') {
 // ---------- shell ----------
 function shell(content) {
   const sub = kindText(me);
-  const tabs = me.kind === 'admin' ? `
-    <nav class="tabs" aria-label="מסכי מג״ד">
-      ${[['round', 'סבב נוכחי'], ['users', 'משתמשים'], ['history', 'היסטוריה']].map(([k, l]) =>
+  const tabList = me.kind === 'admin' ? [['round', 'סבב נוכחי'], ['users', 'משתמשים'], ['history', 'היסטוריה']]
+    : me.can_manage_users ? [['round', 'חתימות'], ['users', 'משתמשים']] : null;
+  const tabs = tabList ? `
+    <nav class="tabs" aria-label="מסכים">
+      ${tabList.map(([k, l]) =>
         `<button class="tab" data-tab="${k}" ${tab === k ? 'aria-current="page"' : ''}>${l}${k === 'users' && pendingCount ? `<span class="badge" aria-label="${pendingCount} ממתינים">${pendingCount}</span>` : ''}</button>`).join('')}
     </nav>` : '';
   const noPhone = !me.phone && tab !== 'profile'

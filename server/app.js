@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
 import { hashPassword, verifyPassword, dummyVerify, newToken, tokenHash, randomPassword, AttemptLimiter } from './auth.js';
-import { ROLES, ROLE_KEYS, ROLE_LABEL, COMPANIES, KINDS, KIND_LABEL } from './constants.js';
+import { ROLES, ROLE_KEYS, ROLE_LABEL, COMPANIES, KINDS, KIND_LABEL, canManageUsers } from './constants.js';
 import { normalizeName, isValidName, NAME_TAKEN_MSG } from './names.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -45,7 +45,7 @@ const phone10 = (v) => {
 const publicUser = (u) => u && ({
   id: u.id, full_name: u.full_name, phone: u.phone, kind: u.kind, kind_label: KIND_LABEL[u.kind],
   role_key: u.role_key, role_label: u.role_key ? ROLE_LABEL[u.role_key] : null, company_key: u.company_key,
-  active: !!u.active, created_at: u.created_at, onboarded: !!u.onboarded_at,
+  active: !!u.active, created_at: u.created_at, onboarded: !!u.onboarded_at, can_manage_users: canManageUsers(u),
 });
 
 /**
@@ -153,6 +153,8 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
   const PUBLIC = 'public';
   const ANY = null;
   const ADMIN = ['admin'];
+  /** Who may assign permissions: the מג״ד, and the קשר״ג (everything except מג״ד). */
+  const USER_MANAGERS = (u) => canManageUsers(u);
 
   route('GET', '/api/health', PUBLIC, async () => ({ ok: (await db.get('SELECT 1 AS x')).x === 1, storage: db.storage }));
   route('GET', '/api/meta', PUBLIC, async () => ({ roles: ROLES, companies: COMPANIES, kinds: KINDS.map((k) => ({ key: k, label: KIND_LABEL[k] })) }));
@@ -337,7 +339,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
   });
 
   // --- מג״ד: users and permissions ---
-  route('GET', '/api/users', ADMIN, async () => ({
+  route('GET', '/api/users', USER_MANAGERS, async () => ({
     users: (await db.all(`SELECT * FROM users WHERE deleted_at IS NULL
       ORDER BY (kind = 'pending' AND active = 1) DESC, active DESC, kind, company_key, role_key, full_name`)).map(publicUser),
   }));
@@ -354,9 +356,17 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
     return u;
   };
 
-  route('PATCH', '/api/users/:id', ADMIN, async ({ user, params, body }) => {
+  route('PATCH', '/api/users/:id', USER_MANAGERS, async ({ user, params, body }) => {
     const updated = await db.tx(async (t) => {
       const u = await targetUser(t, params.id);
+      // קשר״ג: may give and change every permission except מג״ד — never grants it, never touches a מג״ד's
+      // account, never changes his own permission, and only the מג״ד turns accounts on/off.
+      if (user.kind !== 'admin') {
+        const noAdmin = () => new HttpError(403, 'רק מג״ד יכול לתת או לשנות הרשאת מג״ד', 'admin_only');
+        if (body.kind === 'admin' || u.kind === 'admin') throw noAdmin();
+        if (u.id === user.id) throw new HttpError(403, 'את ההרשאה שלך יכול לשנות רק המג״ד', 'self');
+        if (body.active !== undefined) throw forbidden();
+      }
       if (body.kind !== undefined) {
         const kind = KINDS.includes(body.kind) ? body.kind : null;
         if (!kind) throw bad('יש לבחור הרשאה', 'kind');
@@ -479,7 +489,8 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
       if (rt.kinds !== PUBLIC) {
         user = await currentUser(req);
         if (!user) throw new HttpError(401, 'יש להתחבר מחדש', 'unauthenticated');
-        if (rt.kinds && !rt.kinds.includes(user.kind)) throw forbidden();
+        if (typeof rt.kinds === 'function') { if (!rt.kinds(user)) throw forbidden(); }
+        else if (rt.kinds && !rt.kinds.includes(user.kind)) throw forbidden();
       }
       sendJson(res, 200, await rt.handler({ req, res, user, params, body }));
     } catch (e) {

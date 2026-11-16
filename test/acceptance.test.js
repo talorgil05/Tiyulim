@@ -109,6 +109,32 @@ test('everyone registers; the מג״ד assigns each a role or company; others ca
   assert.ok(Array.isArray((await officers.rechev.get('/api/state')).data.companies));
 });
 
+test('קשר״ג assigns every permission except מג״ד', async () => {
+  const k = officers.kashrag;
+  assert.equal((await k.get('/api/auth/me')).data.user.can_manage_users, true);
+  assert.equal((await officers.rechev.get('/api/auth/me')).data.user.can_manage_users, false);
+  assert.equal((await k.get('/api/users')).status, 200);
+  const newbie = client();
+  await newbie.post('/api/auth/register', { full_name: 'חייל חדש', phone: nextPhone(), password: PW });
+  const id = await idOf('חייל חדש');
+  // allowed: officer, company, back to pending
+  assert.equal((await k.patch(`/api/users/${id}`, { kind: 'company', company_key: 'ב' })).status, 200);
+  assert.equal((await k.patch(`/api/users/${id}`, { kind: 'officer', role_key: 'chinuch' })).status, 200);
+  assert.equal((await newbie.get('/api/auth/me')).data.user.role_key, 'chinuch');
+  assert.equal((await k.patch(`/api/users/${id}`, { kind: 'pending' })).status, 200);
+  // not allowed: granting מג״ד, touching a מג״ד, changing himself, on/off, reset, delete
+  assert.equal((await k.patch(`/api/users/${id}`, { kind: 'admin' })).data.code, 'admin_only');
+  assert.equal((await k.patch(`/api/users/${await idOf('סא״ל ישראל')}`, { kind: 'pending' })).data.code, 'admin_only');
+  assert.equal((await k.patch(`/api/users/${await idOf('קצין קשר״ג')}`, { kind: 'officer', role_key: 'rechev' })).data.code, 'self');
+  assert.equal((await k.patch(`/api/users/${id}`, { active: false })).status, 403);
+  assert.equal((await k.post(`/api/users/${id}/reset-password`)).status, 403);
+  assert.equal((await k.post(`/api/users/${id}/delete`, { confirm_name: 'חייל חדש' })).status, 403);
+  // and nothing else of the מג״ד's
+  assert.equal((await k.post('/api/rounds/open')).status, 403);
+  assert.equal((await k.get('/api/rounds')).status, 403);
+  assert.equal((await newbie.get('/api/auth/me')).data.user.kind, 'pending');
+});
+
 test('the מג״ד can give מג״ד to anyone; the last מג״ד is protected', async () => {
   const me = await idOf('סא״ל ישראל');
   // only one מג״ד: can't lose the role, be deactivated or be deleted

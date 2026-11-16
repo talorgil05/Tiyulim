@@ -18,6 +18,9 @@ export async function renderUsers(ctx) {
   const { users } = await api.get('/api/users');
   const { meta } = ctx;
   const me = ctx.user;
+  // the קשר״ג manages permissions too — everything except מג״ד, and not the מג״ד's accounts or his own
+  const isAdmin = me.kind === 'admin';
+  const canEdit = (u) => isAdmin || (u.kind !== 'admin' && u.id !== me.id);
   const active = users.filter((u) => u.active);
   const pending = active.filter((u) => u.kind === 'pending');
   const missRoles = meta.roles.filter((r) => !active.some((u) => u.role_key === r.key)).map((r) => r.label);
@@ -29,7 +32,8 @@ export async function renderUsers(ctx) {
       <h1>משתמשים והרשאות</h1>
       <span class="muted">${active.length} פעילים${pending.length ? ` · <b style="color:var(--orange-ink)">${pending.length} ממתינים לשיוך</b>` : ''}</span>
     </div>
-    <p class="small muted" style="margin-top:-.4rem">כל מי שנרשם מופיע כאן כ״ממתין לשיוך״. לוחצים <b>שינוי הרשאה</b> ומשייכים לתפקיד, לפלוגה — או נותנים הרשאת מג״ד.</p>
+    <p class="small muted" style="margin-top:-.4rem">כל מי שנרשם מופיע כאן כ״ממתין לשיוך״. לוחצים <b>שינוי הרשאה</b> ומשייכים לתפקיד או לפלוגה${isAdmin
+      ? ' — או נותנים הרשאת מג״ד.' : '. הרשאת מג״ד, השבתה, איפוס סיסמה ומחיקה — רק אצל המג״ד.'}</p>
     ${miss.length ? `<div class="missing"><b>עדיין בלי חשבון פעיל:</b> ${miss.map(esc).join(' · ')}</div>` : ''}
     <div class="field"><label class="sr-only" for="u-q">חיפוש</label>
       <input type="search" id="u-q" placeholder="חיפוש לפי שם, טלפון, תפקיד או פלוגה" value="${esc(query)}"></div>
@@ -46,10 +50,11 @@ export async function renderUsers(ctx) {
           ${u.active ? '' : '<span class="tag off">מושבת</span>'}</div>
         <div class="user-meta"><span>📱 ${phoneLink(u.phone)}</span><span>נרשם ${esc(fmtStamp(u.created_at))}</span></div>
         <div class="btn-row">
-          <button type="button" class="btn btn-sm btn-primary" data-perm>שינוי הרשאה</button>
+          ${canEdit(u) ? '<button type="button" class="btn btn-sm btn-primary" data-perm>שינוי הרשאה</button>' : ''}
+          ${!isAdmin ? '' : `
           ${u.id === me.id ? '' : `<button type="button" class="btn btn-sm ${u.active ? 'btn-danger' : ''}" data-toggle>${u.active ? 'השבתה' : 'הפעלה'}</button>`}
           <button type="button" class="btn btn-sm" data-reset>איפוס סיסמה</button>
-          ${u.id === me.id ? '' : '<button type="button" class="btn btn-sm btn-danger" data-delete>מחיקה</button>'}
+          ${u.id === me.id ? '' : '<button type="button" class="btn btn-sm btn-danger" data-delete>מחיקה</button>'}`}
         </div>
       </article>`).join('') : '<p class="muted">לא נמצאו משתמשים</p>';
   };
@@ -60,7 +65,7 @@ export async function renderUsers(ctx) {
   const afterSelfChange = (user) => {
     if (user.id !== me.id) return false;
     ctx.setUser(user);
-    if (user.kind !== 'admin') { location.hash = ''; ctx.reenter(); return true; }
+    if (!user.can_manage_users) { location.hash = ''; ctx.reenter(); return true; }
     return false;
   };
 
@@ -76,7 +81,7 @@ export async function renderUsers(ctx) {
         <fieldset class="perm-pick"><legend class="sr-only">בחירת הרשאה</legend>
           ${opt('officer', 'קצין מטה', 'חותם לפלוגות בשם התפקיד', sel('p-role', meta.roles.map((r) => [r.key, r.label]), u.role_key, 'בחרו תפקיד…'))}
           ${opt('company', 'משתמש פלוגתי', 'צופה בטופס של הפלוגה שלו בלבד', sel('p-co', meta.companies.map((c) => [c, coName(c)]), u.company_key, 'בחרו פלוגה…'))}
-          ${opt('admin', 'מג״ד', 'כל ההרשאות: סבבים, אישור סופי, משתמשים')}
+          ${isAdmin ? opt('admin', 'מג״ד', 'כל ההרשאות: סבבים, אישור סופי, משתמשים') : ''}
           ${opt('pending', 'ללא הרשאה', 'ממתין לשיוך — לא רואה ולא חותם')}
         </fieldset></form>`,
       foot: '<button type="button" class="btn" data-close>ביטול</button><button type="submit" form="perm-form" class="btn btn-primary">שמירה</button>',
