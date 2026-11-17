@@ -409,7 +409,7 @@ function formView(f, { openRound = false, round = null } = {}) {
         <span>הודפס: ${esc(fmtStamp(new Date().toISOString()))}</span></div>
     </div>
     <div class="form-head"><h1>${esc(coName(f.company))}</h1>
-      <button type="button" class="btn btn-sm no-print" data-print>🖨 הדפסה / PDF</button>
+      <button type="button" class="btn btn-sm no-print" data-pdf data-company="${esc(f.company)}" data-name="${esc(`טופס טיולים - ${coName(f.company)}${round ? ` - ${weekName(round)}` : ''}`)}">⬇ הורדת PDF</button>
       <span class="count">${f.areas_done}/${f.areas_total} תחומים · ${f.signed_count}/${f.total} שורות</span></div>
     <p class="small muted" style="margin-top:-.4rem">לחיצה על תחום מציגה את השורות שלו, מי חתם ומתי.</p>
     <div class="areas">${areas}</div>
@@ -417,18 +417,29 @@ function formView(f, { openRound = false, round = null } = {}) {
       ${f.approval ? `<small>אושר על ידי ${esc(f.approval.approver_name)} · ${esc(fmtStamp(f.approval.approved_at))}</small>` : ''}</div></div>`;
 }
 
-/** Print the form (the browser's print window also offers "Save as PDF"). Every area is opened first. */
-function printForm() {
-  const areas = [...document.querySelectorAll('details.area')];
-  const wasOpen = areas.map((d) => d.open);
-  areas.forEach((d) => { d.open = true; });
-  const restore = () => { areas.forEach((d, i) => { if (d.isConnected) d.open = wasOpen[i]; }); window.removeEventListener('afterprint', restore); };
-  window.addEventListener('afterprint', restore);
-  window.print();
+/** "הורדת PDF": draws the form on A4 pages and downloads the file (see /js/pdf.js). */
+async function downloadPdf(btn) {
+  if (btn.disabled) return;
+  const form = state?.form?.company === btn.dataset.company ? state.form : state?.forms?.find((x) => x.company === btn.dataset.company);
+  if (!form) return;
+  btn.disabled = true;
+  const overlay = document.createElement('div');
+  overlay.className = 'pdf-overlay';
+  overlay.setAttribute('role', 'status');
+  overlay.innerHTML = '<div><span class="pdf-spin" aria-hidden="true"></span><b>מכין את קובץ ה־PDF…</b></div>';
+  document.body.append(overlay);
+  try {
+    const { downloadFormPdf } = await import('./pdf.js');
+    await downloadFormPdf({ form, round: state.round, title: coName(form.company), filename: btn.dataset.name || 'טופס טיולים' });
+    toast('קובץ ה־PDF הורד ✓', 'ok');
+  } catch (ex) {
+    toast(ex.message || 'יצירת ה־PDF נכשלה. נסו שוב', 'error');
+  } finally {
+    overlay.remove();
+    if (btn.isConnected) btn.disabled = false;
+  }
 }
-// Ctrl+P from the browser menu: open every area too
-window.addEventListener('beforeprint', () => document.querySelectorAll('details.area').forEach((d) => { d.open = true; }));
-document.addEventListener('click', (e) => { if (e.target.closest('[data-print]')) printForm(); });
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-pdf]'); if (b) downloadPdf(b); });
 
 function renderCompany() {
   const { round, form } = state;
