@@ -58,7 +58,11 @@ const sortRoles = (keys) => ROLE_KEYS.filter((k) => keys.includes(k));
  * dbUrl: Turso URL (libsql://…) with authToken, or a local file path for development and tests.
  * setupCode: secret one-time code that lets the first מג״ד create an account. Dead once any מג״ד exists.
  */
-export async function createApp({ dbUrl, authToken, setupCode, clock = () => new Date(), secureCookies = false, trustProxy = false, log = console } = {}) {
+/**
+ * The whole app as one request handler: handle(req, res). Used by the long-running server below and by the
+ * Vercel function (api/index.js), which keeps one handler per warm instance.
+ */
+export async function createHandler({ dbUrl, authToken, setupCode, clock = () => new Date(), secureCookies = false, trustProxy = false, log = console } = {}) {
   const db = await openDb(dbUrl, authToken);
   const nowIso = () => clock().toISOString();
 
@@ -84,12 +88,13 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
   const registerLimiter = new AttemptLimiter({ max: 150, windowMs: 60 * 60 * 1000 });
   const userById = async (id) => withRoles(await db.get('SELECT * FROM users WHERE id = ?', id));
 
-  // ---------- live updates (server-sent events) ----------
-  const sseClients = new Set();
-  let version = 0;
-  function changed() {
-    version++;
-    for (const res of sseClients) res.write(`event: change\ndata: ${version}\n\n`);
+  // ---------- live updates ----------
+  // A change counter in the database: every signature / approval / round / user change bumps it, and open
+  // screens poll /api/version every few seconds and reload only when it moved. Kept in the database (not in
+  // memory) so it works on serverless hosting (Vercel), where every request may hit a different instance.
+  async function changed() {
+    await db.run(`INSERT INTO app_settings (key, value) VALUES ('version', '1')
+      ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1`);
   }
 
   // ---------- sessions ----------
@@ -185,6 +190,8 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
 
   route('GET', '/api/health', PUBLIC, async () => ({ ok: (await db.get('SELECT 1 AS x')).x === 1, storage: db.storage }));
   route('GET', '/api/meta', PUBLIC, async () => ({ roles: ROLES, companies: COMPANIES, kinds: KINDS.map((k) => ({ key: k, label: KIND_LABEL[k] })) }));
+  /** Screens poll this every few seconds and reload only when the number moved. */
+  route('GET', '/api/version', ANY, async () => ({ version: Number((await db.get("SELECT value FROM app_settings WHERE key = 'version'"))?.value || 0) }));
   route('GET', '/api/setup/status', PUBLIC, async () => ({ open: await setupOpen() }));
 
   /**
@@ -218,7 +225,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
       throw e;
     }
     await startSession(res, req, id);
-    changed();   // the מג״ד's users tab shows the new pending account at once
+    await changed();   // the מג״ד's users tab shows the new pending account at once
     return { user: publicUser(await userById(id)) };
   });
 
@@ -254,7 +261,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
       if (String(e.message).includes('UNIQUE')) throw conflict(NAME_TAKEN_MSG, 'name_taken');
       throw e;
     }
-    changed();
+    await changed();
     return { user: publicUser(await userById(user.id)) };
   });
 
@@ -332,7 +339,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
       }
       if (!added) throw conflict(keys.length === 1 ? 'השורה הזו כבר נחתמה בסבב הנוכחי' : 'כל השורות שלך לפלוגה זו כבר נחתמו', 'already_signed');
     });
-    changed();
+    await changed();
     return { ok: true, signed: added };
   });
 
@@ -343,7 +350,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
       const n = ((await t.get('SELECT MAX(number) AS n FROM rounds')).n || 0) + 1;
       await t.run(`INSERT INTO rounds (number, status, opened_at, opened_by, opened_by_name) VALUES (?, 'open', ?, ?, ?)`, n, nowIso(), user.id, user.full_name);
     });
-    changed();
+    await changed();
     return { round: roundView(await openRound()) };
   });
 
@@ -353,7 +360,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
       if (!r) throw conflict('אין סבב פתוח', 'no_round');
       await t.run(`UPDATE rounds SET status = 'closed', closed_at = ?, closed_by = ?, closed_by_name = ? WHERE id = ?`, nowIso(), user.id, user.full_name, r.id);
     });
-    changed();
+    await changed();
     return { ok: true };
   });
 
@@ -370,7 +377,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
         r.id, c, user.id, user.full_name, nowIso());
       if (!res.changes) throw conflict('הטופס כבר אושר', 'already_approved');
     });
-    changed();
+    await changed();
     return { ok: true };
   });
 
@@ -442,7 +449,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
       }
       return withRoles(await t.get('SELECT * FROM users WHERE id = ?', u.id), t);
     });
-    changed();
+    await changed();
     return { user: publicUser(updated) };
   });
 
@@ -478,7 +485,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
       await t.run('DELETE FROM user_roles WHERE user_id = ?', u.id);
       await t.run('DELETE FROM sessions WHERE user_id = ?', u.id);
     });
-    changed();
+    await changed();
     return { ok: true };
   });
 
@@ -510,6 +517,13 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
     });
   }
   function readBody(req, limit = 32 * 1024) {
+    // On Vercel the body may already be read and parsed by the platform (req.body)
+    if (req.body !== undefined && req.body !== null) {
+      let v = req.body;
+      try { if (typeof v === 'string' || Buffer.isBuffer(v)) v = v.length ? JSON.parse(v.toString('utf8')) : {}; }
+      catch { return Promise.reject(bad('גוף הבקשה אינו JSON תקין')); }
+      return Promise.resolve(v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+    }
     return new Promise((resolve, reject) => {
       let size = 0; const chunks = [];
       req.on('data', (c) => { size += c.length; if (size > limit) { reject(new HttpError(413, 'הבקשה גדולה מדי', 'too_large')); req.destroy(); } else chunks.push(c); });
@@ -531,16 +545,6 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
       return serveStatic(req, res, pathname);
     }
     try {
-      if (pathname === '/api/events' && req.method === 'GET') {
-        const user = await currentUser(req);
-        if (!user) throw new HttpError(401, 'יש להתחבר', 'unauthenticated');
-        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
-        res.write(`event: hello\ndata: ${version}\n\n`);
-        sseClients.add(res);
-        const hb = setInterval(() => res.write(': ping\n\n'), 25000);
-        req.on('close', () => { clearInterval(hb); sseClients.delete(res); });
-        return;
-      }
       let match, rt;
       for (const r of routes) if (r.method === req.method && (match = r.re.exec(pathname))) { rt = r; break; }
       if (!rt) throw notFound('נתיב לא קיים');
@@ -567,7 +571,12 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
     }
   }
 
+  return { handle, db };
+}
+
+/** Classic long-running server (local development, tests, Render). */
+export async function createApp(opts = {}) {
+  const { handle, db } = await createHandler(opts);
   const server = http.createServer((req, res) => { handle(req, res); });
-  server.on('close', () => { for (const r of sseClients) r.end(); });
   return { server, db };
 }

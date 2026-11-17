@@ -67,13 +67,41 @@ async function refresh() {
 }
 
 /**
- * Live updates: any signature / approval / round / user change. My own account is re-read too, so a
- * pending user's screen switches the moment the מג״ד gives a permission (and a removed one, back).
+ * Live updates by polling (works on serverless hosting): every 10 seconds, while the screen is visible, ask
+ * the server for its change counter, and reload only when it moved. My own account is re-read too, so a
+ * pending user's screen switches soon after the מג״ד gives a permission (and a removed one, back).
  */
+// Every 15 s while someone is using the screen; once a minute after 5 minutes without a touch/click/key, so a
+// screen left open all day stays well inside the free hosting quota.
+const POLL_MS = 15000, IDLE_POLL_MS = 60000, IDLE_AFTER_MS = 5 * 60000;
+let lastVersion = null, lastActive = Date.now(), lastPoll = 0;
+for (const ev of ['pointerdown', 'keydown', 'scroll']) {
+  window.addEventListener(ev, () => {
+    const wasIdle = Date.now() - lastActive > IDLE_AFTER_MS;
+    lastActive = Date.now();
+    if (wasIdle && me) poll(true);   // back from idle: catch up at once
+  }, { passive: true, capture: true });
+}
+async function poll(force = false) {
+  if (!me || document.visibilityState !== 'visible') return;
+  const idle = Date.now() - lastActive > IDLE_AFTER_MS;
+  if (!force && idle && Date.now() - lastPoll < IDLE_POLL_MS) return;
+  lastPoll = Date.now();
+  let v;
+  try { v = (await api.get('/api/version')).version; } catch { return; }
+  if (lastVersion === null) { lastVersion = v; return; }
+  if (v === lastVersion) return;
+  lastVersion = v;
+  await onChange();
+}
 function startEvents() {
   stopEvents();
-  events = new EventSource('/api/events');
-  events.addEventListener('change', async () => {
+  lastVersion = null;
+  poll(true);
+  events = setInterval(() => poll(), POLL_MS);
+}
+async function onChange() {
+  {
     if (!me) return;
     let fresh;
     try { fresh = (await api.get('/api/auth/me')).user; } catch { return; }
@@ -85,11 +113,11 @@ function startEvents() {
     }
     if (isRoundTab(tab)) return show().catch(() => {});   // also updates the "pending" badge
     if (tab === 'users' && !document.querySelector('dialog[open]')) return renderUsers(ctx);
-  });
+  }
 }
-function stopEvents() { events?.close(); events = null; }
-// a phone coming back from the background: catch up
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && me && isRoundTab(tab)) refresh().catch(() => {}); });
+function stopEvents() { if (events) clearInterval(events); events = null; }
+// a phone coming back from the background: catch up at once
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && me) { lastActive = Date.now(); poll(true); } });
 
 // ---------- login / register (like תיאומון: full name is the login name) ----------
 async function renderLogin(mode = 'login') {

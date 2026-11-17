@@ -44,6 +44,17 @@ npm run seed-demo    # מקומי בלבד: משתמשי דמו לכל תפקי�
 
 מסד שנוצר בגרסה הראשונה (כניסה עם שם משתמש) משודרג אוטומטית בהפעלה: כל המשתמשים, הסבבים והחתימות נשמרים, ומעכשיו נכנסים עם **השם המלא**. משתמש בלי טלפון מתבקש להוסיף אותו. ב־Turso יש שחזור לנקודת זמן, למקרה הצורך.
 
+## העלאה לאוויר — Vercel + Turso (מומלץ: לא נרדם)
+
+ב־Vercel השרת רץ כפונקציה (`api/index.js`) והקבצים הסטטיים מוגשים מ־`public/` (ההגדרות ב־`vercel.json`). אין "שינה" — כל כניסה נענית מיד.
+
+1. ב־vercel.com נרשמים עם GitHub → **Add New → Project** → בוחרים את המאגר **Tiyulim** → **Import**.
+2. ב־**Environment Variables** מוסיפים: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` (אותם ערכים כמו ב־Render).
+3. **Deploy**. מתקבלת כתובת בסגנון `https://tiyulim-xxxx.vercel.app`.
+
+עדכונים חיים: המסך בודק כל 15 שניות אם משהו השתנה (ופעם בדקה אחרי 5 דקות בלי פעילות), כדי להישאר בתוך מכסת הבקשות החינמית של Vercel.
+כל `git push` ל־`main` עולה אוטומטית גם ל־Vercel וגם ל־Render; שניהם עובדים על אותו מסד נתונים.
+
 ## העלאה לאוויר — Render + Turso (כמו תיאומון)
 
 1. **Turso:** ב־turso.tech → Create Database בשם `tiyulim`, אזור Frankfurt. מעתיקים את ה־Database URL (`libsql://…`) ויוצרים Token עם הרשאת read & write.
