@@ -6,7 +6,7 @@
   <title>טופס טיולים גדודי</title>
   <meta name="description" content="חתימות קציני מטה לפני יציאת פלוגות הביתה">
   <meta name="theme-color" content="#0B2559">
-  <link rel="icon" href="/icons/logo.svg" type="image/svg+xml">
+  <link rel="icon" href="/icons/favicon-64.png" type="image/png">
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -14,10 +14,42 @@
   <meta name="apple-mobile-web-app-title" content="טופס טיולים">
   <link rel="manifest" href="/manifest.webmanifest">
   <script src="/js/theme-boot.js"></script>
+  <script src="/js/splash-boot.js"></script>
   <link rel="stylesheet" href="/css/app.css">
+  <link rel="stylesheet" href="/css/splash.css">
   <script type="module" src="/js/app.js"></script>
 </head>
 <body>
+  <!-- opening animation: the pen signs the page (hidden by /js/app.js when the app is ready) -->
+  <div id="splash" class="splash" aria-hidden="true">
+    <div class="splash-tile">
+      <svg viewBox="150 140 1080 1010" xmlns="http://www.w3.org/2000/svg" focusable="false">
+        <g fill="none" stroke="#0B2848" stroke-linecap="round" stroke-linejoin="round">
+          <path class="sp-page" pathLength="1" stroke-width="66" d="M 740 210 H 322 Q 225 210 225 306 V 982 Q 225 1078 322 1078 H 804 Q 900 1078 900 982 V 368 L 740 210 Z"/>
+          <path class="sp-fold" pathLength="1" stroke-width="44" d="M 732 222 V 318 Q 732 374 788 374 H 892"/>
+          <path class="sp-line1" pathLength="1" stroke-width="56" d="M 352 508 H 758"/>
+          <path class="sp-line2" pathLength="1" stroke-width="56" d="M 352 633 H 690"/>
+        </g>
+        <path class="sp-corner" fill="#2F6DB4" d="M 758 178 L 933 352 H 796 Q 758 352 758 314 Z"/>
+        <path id="sp-sig" class="sp-sig" pathLength="1" fill="none" stroke="#2F6DB4" stroke-width="42" stroke-linecap="round" stroke-linejoin="round"
+          d="M 318 935 C 362 893 418 852 452 878 C 474 896 488 952 500 994 C 590 922 690 862 790 832"/>
+        <g class="sp-pen">
+          <g class="sp-lift">
+            <g transform="rotate(-50)">
+              <path fill="#fff" stroke="#fff" stroke-width="44" stroke-linejoin="round" d="M 30 -12 L 40 -22 L 140 -56 L 150 -62 H 500 A 62 62 0 0 1 500 62 H 150 L 140 56 L 40 22 L 30 12 Z"/>
+              <path fill="#2F6DB4" d="M 0 0 L 34 -15 L 34 15 Z"/>
+              <path fill="#0B2848" stroke="#fff" stroke-width="10" stroke-linejoin="round" d="M 40 -20 L 140 -50 L 140 50 L 40 20 Z"/>
+              <rect x="150" y="-62" width="412" height="124" rx="62" fill="#0B2848" stroke="#fff" stroke-width="10"/>
+              <path fill="none" stroke="#fff" stroke-width="30" stroke-linecap="round" d="M 330 78 L 505 78"/>
+              <path fill="none" stroke="#0B2848" stroke-width="22" stroke-linecap="round" d="M 330 80 L 505 80 Q 530 80 530 55"/>
+            </g>
+          </g>
+        </g>
+      </svg>
+    </div>
+    <div class="splash-name">טופס טיולים גדודי</div>
+    <div class="splash-tag">חתימות קציני מטה לפני יציאה הביתה</div>
+  </div>
   <a class="skip-link" href="#main">דלג לתוכן</a>
   <div id="app" aria-busy="true"><div class="boot">טוען…</div></div>
   <div id="toasts" class="toasts" role="status" aria-live="polite"></div>

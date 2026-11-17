@@ -20,8 +20,48 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').cat
 (async function boot() {
   meta = await api.get('/api/meta');
   try { me = (await api.get('/api/auth/me')).user; } catch { me = null; }
-  if (me) await enter(); else renderLogin();
-})();
+  if (me) await enter(); else await renderLogin();
+  hideSplash();
+})().catch(() => hideSplash());
+
+/**
+ * Opening animation.
+ *  - The pen follows the signature exactly: every frame it is placed at the point the signature has reached
+ *    (read from the signature's own draw animation), so the two never drift apart, however late it starts.
+ *  - It closes when its last step (the pen lifting) has finished AND the app is ready — or at once on a tap.
+ */
+const splash = document.getElementById('splash');
+let splashAnimDone = false, appReady = false;
+function closeSplash() {
+  if (!splash?.isConnected || splash.classList.contains('out')) return;
+  splash.classList.add('out');
+  setTimeout(() => splash.remove(), 400);
+}
+function hideSplash() {
+  appReady = true;
+  if (!splash) return;
+  if (document.documentElement.classList.contains('no-splash') || matchMedia('(prefers-reduced-motion: reduce)').matches) { splash.remove(); return; }
+  if (splashAnimDone) setTimeout(closeSplash, 250);
+}
+if (splash && !document.documentElement.classList.contains('no-splash') && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  const sig = splash.querySelector('.sp-sig');
+  const pen = splash.querySelector('.sp-pen');
+  const total = sig.getTotalLength();
+  const follow = () => {
+    if (!splash.isConnected) return;
+    const left = parseFloat(getComputedStyle(sig).strokeDashoffset) || 0;   // 1 → 0 while it draws
+    const pt = sig.getPointAtLength(Math.min(1, Math.max(0, 1 - left)) * total);
+    pen.setAttribute('transform', `translate(${pt.x.toFixed(1)} ${pt.y.toFixed(1)})`);
+    requestAnimationFrame(follow);
+  };
+  follow();
+  splash.querySelector('.sp-lift').addEventListener('animationend', () => {
+    splashAnimDone = true;
+    if (appReady) setTimeout(closeSplash, 250);
+  });
+  setTimeout(() => { splashAnimDone = true; if (appReady) closeSplash(); }, 6000);   // safety net
+  splash.addEventListener('click', closeSplash);
+}
 
 // An officer gets one "חתימות <area>" tab per area he holds (e.g. חתימות תקשוב, חתימות הדרכה).
 const signTabs = () => (me.kind === 'officer' ? (me.role_keys || []).map((k) => `sign-${k}`) : []);
@@ -126,7 +166,7 @@ async function renderLogin(mode = 'login') {
   const reg = mode === 'register';
   app.innerHTML = `
     <div class="landing" id="main">
-      <img class="landing-logo" src="/icons/logo.svg" alt="">
+      <img class="landing-logo" src="/icons/logo.png" alt="">
       <h1>טופס טיולים גדודי</h1>
       <p class="landing-tag">חתימות קציני מטה לפני יציאה הביתה</p>
       <div class="auth-card">
@@ -205,7 +245,7 @@ function shell(content) {
   app.innerHTML = `
     <div class="shell">
       <header class="topbar">
-        <a class="brand" href="#/round" style="color:inherit;text-decoration:none"><img src="/icons/logo.svg" alt=""><span>טופס טיולים גדודי</span></a>
+        <a class="brand" href="#/round" style="color:inherit;text-decoration:none"><img src="/icons/logo.png" alt=""><span>טופס טיולים גדודי</span></a>
         <div class="spacer"></div>
         <a class="top-link" href="/help/" aria-label="עזרה">${ICONS.help}<span>עזרה</span></a>
         <a class="who" href="#/profile" title="הפרופיל שלי"><b>${esc(me.full_name)}</b><span>${esc(sub)}</span></a>

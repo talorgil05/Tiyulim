@@ -100,7 +100,7 @@ input:focus, select:focus { border-color: var(--navy-2); outline-color: rgba(22,
 /* ---------- login ---------- */
 .landing { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem 1.1rem;
   background: radial-gradient(60% 45% at 50% 0%, rgba(245,124,0,.10), transparent 70%), linear-gradient(180deg, var(--card) 0%, var(--navy-soft) 100%); }
-.landing-logo { width: 96px; height: 96px; filter: drop-shadow(0 8px 20px rgba(11,37,89,.18)); }
+.landing-logo { width: 96px; height: 96px; border-radius: 22%; background: #fff; box-shadow: 0 10px 26px rgba(11,40,72,.16); }
 .landing h1 { color: var(--navy); font-size: 2rem; margin: .8rem 0 .1rem; text-align: center; }
 .landing-tag { color: var(--orange-ink); font-weight: 700; margin: 0 0 1.4rem; text-align: center; }
 .auth-card { width: 100%; max-width: 420px; background: var(--card); border-radius: 18px; box-shadow: var(--shadow); padding: 1.4rem; border-top: 4px solid var(--orange); }
