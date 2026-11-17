@@ -23,11 +23,15 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').cat
   if (me) await enter(); else renderLogin();
 })();
 
+// An officer gets one "חתימות <area>" tab per area he holds (e.g. חתימות תקשוב, חתימות הדרכה).
+const signTabs = () => (me.kind === 'officer' ? (me.role_keys || []).map((k) => `sign-${k}`) : []);
 const TABS = () => (me.kind === 'admin' ? ['round', 'users', 'history', 'profile']
-  : me.can_manage_users ? ['round', 'users', 'profile'] : ['round', 'profile']);
+  : me.kind === 'officer' ? [...signTabs(), ...(me.can_manage_users ? ['users'] : []), 'profile'] : ['round', 'profile']);
+const homeTab = () => (me.kind === 'officer' && signTabs().length ? signTabs()[0] : 'round');
+const isRoundTab = (t) => t === 'round' || t.startsWith('sign-');
 function tabFromHash() {
-  const t = location.hash.replace('#/', '') || 'round';
-  return TABS().includes(t) ? t : 'round';
+  const t = location.hash.replace('#/', '') || homeTab();
+  return TABS().includes(t) ? t : homeTab();
 }
 window.addEventListener('hashchange', () => { if (!me) return; const t = tabFromHash(); if (t !== tab) { tab = t; show(); } });
 
@@ -55,6 +59,7 @@ async function show() {
   if (tab === 'history') return renderHistory(ctx);
   return refresh();
 }
+const roleLabel = (k) => meta.roles.find((r) => r.key === k)?.label || k;
 
 async function refresh() {
   state = await api.get('/api/state');
@@ -72,19 +77,19 @@ function startEvents() {
     if (!me) return;
     let fresh;
     try { fresh = (await api.get('/api/auth/me')).user; } catch { return; }
-    const kindChanged = fresh.kind !== me.kind || fresh.role_key !== me.role_key || fresh.company_key !== me.company_key;
+    const kindChanged = fresh.kind !== me.kind || (fresh.role_keys || []).join() !== (me.role_keys || []).join() || fresh.company_key !== me.company_key;
     me = fresh;
     if (kindChanged) {
       toast(me.kind === 'pending' ? 'ההרשאה שלך הוסרה' : `קיבלת הרשאה: ${kindText(me)}`, 'ok');
       return enter();
     }
-    if (tab === 'round') return show().catch(() => {});   // also updates the מג״ד's "pending" badge
+    if (isRoundTab(tab)) return show().catch(() => {});   // also updates the "pending" badge
     if (tab === 'users' && !document.querySelector('dialog[open]')) return renderUsers(ctx);
   });
 }
 function stopEvents() { events?.close(); events = null; }
 // a phone coming back from the background: catch up
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && me && tab === 'round') refresh().catch(() => {}); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && me && isRoundTab(tab)) refresh().catch(() => {}); });
 
 // ---------- login / register (like תיאומון: full name is the login name) ----------
 async function renderLogin(mode = 'login') {
@@ -159,7 +164,8 @@ async function renderLogin(mode = 'login') {
 function shell(content) {
   const sub = kindText(me);
   const tabList = me.kind === 'admin' ? [['round', 'סבב נוכחי'], ['users', 'משתמשים'], ['history', 'היסטוריה']]
-    : me.can_manage_users ? [['round', 'חתימות'], ['users', 'משתמשים']] : null;
+    : me.kind === 'officer' ? [...(me.role_keys || []).map((k) => [`sign-${k}`, `חתימות ${roleLabel(k)}`]), ...(me.can_manage_users ? [['users', 'משתמשים']] : [])]
+    : null;
   const tabs = tabList ? `
     <nav class="tabs" aria-label="מסכים">
       ${tabList.map(([k, l]) =>
@@ -207,7 +213,7 @@ function roundBar(round, { admin = false } = {}) {
 
 function render() {
   if (state?.pending || me.kind === 'pending') return renderPending();
-  if (me.kind === 'officer') return renderOfficer();
+  if (me.kind === 'officer') return renderOfficer(tab.startsWith('sign-') ? tab.slice(5) : me.role_keys?.[0]);
   if (me.kind === 'company') return renderCompany();
   return renderAdmin();
 }
@@ -242,8 +248,11 @@ const partial = (n, total) => `<span class="mark wait" aria-hidden="true">…</s
 const officerStatus = (c) => !c.applies ? '<span class="st-no">לא רלוונטי</span>'
   : c.done ? yes('חתמתי') : c.signed_count ? partial(c.signed_count, c.total) : no('טרם חתמתי');
 
-function renderOfficer() {
-  const { round, companies } = state;
+function renderOfficer(areaKey) {
+  const { round } = state;
+  const area = state.areas?.find((a) => a.key === areaKey) || state.areas?.[0];
+  if (!area) return renderPending();
+  const { companies } = area;
   const open = round?.status === 'open';
   if (!selected || !companies.some((c) => c.company === selected)) {
     selected = (companies.find((c) => c.applies && !c.done) || companies.find((c) => c.applies) || companies[0]).company;
@@ -256,7 +265,7 @@ function renderOfficer() {
     </button>`).join('');
   let body;
   if (!cur.applies) {
-    body = `<p class="muted">התחום <b>${esc(me.role_label)}</b> לא רלוונטי ל${esc(coName(cur.company))}. אין כאן מה לחתום.</p>`;
+    body = `<p class="muted">התחום <b>${esc(area.label)}</b> לא רלוונטי ל${esc(coName(cur.company))}. אין כאן מה לחתום.</p>`;
   } else {
     const rows = cur.items.map((it) => `
       <li class="item-row ${it.signed ? 'signed' : ''}">
@@ -281,12 +290,12 @@ function renderOfficer() {
       <nav class="co-list" aria-label="פלוגות"><h2>פלוגות${round ? ` · סבב ${round.number}` : ''}</h2>${list}</nav>
       <section class="panel sign-panel" aria-live="polite">
         <h1 class="sign-co">${esc(coName(cur.company))}</h1>
-        <p class="sign-role">חותם/ת בתור: <b>${esc(me.role_label)}</b></p>
+        <p class="sign-role">חותם/ת בתור: <b>${esc(area.label)}</b></p>
         ${body}
       </section>
     </div>`);
   app.querySelectorAll('[data-co]').forEach((b) => b.addEventListener('click', () => {
-    selected = b.dataset.co; renderOfficer();
+    selected = b.dataset.co; renderOfficer(area.key);
     if (matchMedia('(max-width: 760px)').matches) app.querySelector('.sign-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }));
   const sign = async (btn, extra, okText) => {
@@ -296,7 +305,7 @@ function renderOfficer() {
     await refresh();
   };
   app.querySelectorAll('[data-item]').forEach((b) => b.addEventListener('click', () => sign(b, { item: b.dataset.item }, 'נחתם ✓')));
-  app.querySelector('[data-sign-all]')?.addEventListener('click', (e) => sign(e.currentTarget, {}, `כל השורות שלך ל${coName(cur.company)} נחתמו ✓`));
+  app.querySelector('[data-sign-all]')?.addEventListener('click', (e) => sign(e.currentTarget, { role: area.key }, `כל השורות שלך ל${coName(cur.company)} נחתמו ✓`));
 }
 
 // ---------- company form (read-only): by area, each row its own signature ----------

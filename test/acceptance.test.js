@@ -216,14 +216,44 @@ test('officer signs row by row, or all his rows at once — only in the name of 
 test('הכש״י / הכש״מ areas sign only for their own companies', async () => {
   assert.equal((await officers.kambatz_hachsham.post('/api/sign', { company: 'א' })).data.code, 'not_relevant');
   assert.equal((await officers.kambatz_hachshi.post('/api/sign', { company: '601' })).data.code, 'not_relevant');
-  assert.equal((await officers.kambatz_hachshi.post('/api/sign', { company: 'עיט' })).data.code, 'not_relevant');
+  assert.equal((await officers.kambatz_hachshi.post('/api/sign', { company: 'מפקדה' })).data.code, 'not_relevant');
   const view = (await officers.kambatz_hachshi.get('/api/state')).data.companies;
   assert.equal(view.find((c) => c.company === 'א').applies, true);
+  assert.equal(view.find((c) => c.company === 'עיט').applies, true);   // עיט goes through קמב״ץ הכש״י
   assert.equal(view.find((c) => c.company === '601').applies, false);
+  assert.ok((await admin.get('/api/state')).data.forms.find((f) => f.company === 'עיט').areas.some((x) => x.key === 'kambatz_hachshi'));
   const keysOf = async (co) => (await admin.get('/api/state')).data.forms.find((f) => f.company === co).areas.map((x) => x.key);
   assert.ok((await keysOf('א')).includes('kambatz_hachshi') && !(await keysOf('א')).includes('kambatz_hachsham'));
   assert.ok((await keysOf('601')).includes('kambatz_hachsham') && !(await keysOf('601')).includes('kambatz_hachshi'));
   assert.ok(!(await keysOf('מפקדה')).includes('kambatz_hachshi') && !(await keysOf('מפקדה')).includes('kambatz_hachsham'));
+});
+
+test('one person can hold several areas; each signs only in its own name', async () => {
+  const multi = client();
+  await multi.post('/api/auth/register', { full_name: 'רב תפקידים', phone: nextPhone(), password: PW });
+  const id = await idOf('רב תפקידים');
+  assert.equal((await admin.patch(`/api/users/${id}`, { kind: 'officer', role_keys: [] })).status, 400);
+  const res = await admin.patch(`/api/users/${id}`, { kind: 'officer', role_keys: ['hadracha', 'tikshuv'] });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.data.user.role_keys, ['hadracha', 'tikshuv']);   // display order
+  assert.equal(res.data.user.role_label, 'הדרכה + תקשוב');
+  assert.equal(res.data.user.can_manage_users, true);                  // תקשוב is one of them
+  const st = (await multi.get('/api/state')).data;
+  assert.deepEqual(st.areas.map((a) => a.key), ['hadracha', 'tikshuv']);
+  // "sign all" must say which area; a row says it by itself
+  assert.equal((await multi.post('/api/sign', { company: 'מפקדה' })).data.code, 'role');
+  assert.equal((await multi.post('/api/sign', { company: 'מפקדה', role: 'tikshuv' })).status, 200);
+  assert.equal((await multi.post('/api/sign', { company: 'מפקדה', item: 'hadracha.1' })).status, 200);
+  assert.equal((await multi.post('/api/sign', { company: 'מפקדה', role: 'rechev' })).data.code, 'wrong_role');
+  assert.equal((await multi.post('/api/sign', { company: 'מפקדה', item: 'rechev.1' })).data.code, 'wrong_role');
+  const b = (await admin.get('/api/state')).data.forms.find((f) => f.company === 'מפקדה');
+  assert.equal(b.areas.find((a) => a.key === 'tikshuv').done, true);
+  assert.equal(b.areas.find((a) => a.key === 'hadracha').signed_count, 1);
+  assert.equal(b.areas.find((a) => a.key === 'hadracha').items[0].signer_name, 'רב תפקידים');
+  // narrowing to one area
+  assert.deepEqual((await admin.patch(`/api/users/${id}`, { kind: 'officer', role_keys: ['hadracha'] })).data.user.role_keys, ['hadracha']);
+  assert.equal((await multi.post('/api/sign', { company: 'ג', role: 'tikshuv' })).data.code, 'wrong_role');
+  assert.equal((await admin.patch(`/api/users/${id}`, { kind: 'pending' })).data.user.role_keys.length, 0);
 });
 
 test('company user sees only its own form, by area and row', async () => {

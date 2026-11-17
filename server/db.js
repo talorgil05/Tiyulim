@@ -72,6 +72,13 @@ CREATE TABLE IF NOT EXISTS approvals (
   PRIMARY KEY (round_id, company_key)
 );
 
+-- An officer may hold several areas (e.g. תקשוב + הדרכה). users.role_key is the first of them.
+CREATE TABLE IF NOT EXISTS user_roles (
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  role_key TEXT NOT NULL,
+  PRIMARY KEY (user_id, role_key)
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -225,5 +232,9 @@ export async function openDb(dbUrl, authToken) {
   await migrateUsersV2(db, client);
   await migrateAreasV3(db, client);
   await db.exec(SCHEMA);   // recreates the triggers that were dropped with the old users table
+  // every officer's main area is also in user_roles (accounts from before several areas existed)
+  await db.run(`INSERT OR IGNORE INTO user_roles (user_id, role_key)
+    SELECT id, role_key FROM users WHERE kind = 'officer' AND role_key IS NOT NULL`);
+  await db.run(`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE kind <> 'officer')`);
   return db;
 }

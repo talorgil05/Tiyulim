@@ -23,7 +23,7 @@ export async function renderUsers(ctx) {
   const canEdit = (u) => isAdmin || (u.kind !== 'admin' && u.id !== me.id);
   const active = users.filter((u) => u.active);
   const pending = active.filter((u) => u.kind === 'pending');
-  const missRoles = meta.roles.filter((r) => !active.some((u) => u.role_key === r.key)).map((r) => r.label);
+  const missRoles = meta.roles.filter((r) => !active.some((u) => (u.role_keys || []).includes(r.key))).map((r) => r.label);
   const missCos = meta.companies.filter((c) => !active.some((u) => u.company_key === c)).map(coName);
   const miss = [...missRoles, ...missCos];
 
@@ -78,7 +78,7 @@ export async function renderUsers(ctx) {
       title: `הרשאה עבור ${u.full_name}`,
       body: `<form id="perm-form" novalidate><div class="form-error" hidden></div>
         <fieldset class="perm-pick"><legend class="sr-only">בחירת הרשאה</legend>
-          ${opt('officer', 'קצין מטה', 'חותם לפלוגות בשם התפקיד', sel('p-role', meta.roles.map((r) => [r.key, r.label]), u.role_key, 'בחרו תפקיד…'))}
+          ${opt('officer', 'קצין מטה', 'חותם לפלוגות בשם התחום — אפשר לסמן כמה תחומים', `<div class="area-pick" id="p-roles">${meta.roles.map((r) => `<label class="area-chk"><input type="checkbox" value="${esc(r.key)}" ${(u.role_keys || []).includes(r.key) ? 'checked' : ''}><span>${esc(r.label)}</span></label>`).join('')}</div>`)}
           ${opt('company', 'משתמש פלוגתי', 'צופה בטופס של הפלוגה שלו בלבד', sel('p-co', meta.companies.map((c) => [c, coName(c)]), u.company_key, 'בחרו פלוגה…'))}
           ${isAdmin ? opt('admin', 'מג״ד', 'כל ההרשאות: סבבים, אישור סופי, משתמשים') : ''}
           ${opt('pending', 'ללא הרשאה', 'ממתין לשיוך — לא רואה ולא חותם')}
@@ -89,9 +89,9 @@ export async function renderUsers(ctx) {
     form.addEventListener('submit', (e) => {
       e.preventDefault();
       const kind = form.kind.value;
-      const body = { kind, role_key: s.$('#p-role').value, company_key: s.$('#p-co').value };
+      const body = { kind, role_keys: [...s.dlg.querySelectorAll('#p-roles input:checked')].map((c) => c.value), company_key: s.$('#p-co').value };
       if (!kind) return formError(form, 'יש לבחור הרשאה');
-      if (kind === 'officer' && !body.role_key) return formError(form, 'יש לבחור תפקיד');
+      if (kind === 'officer' && !body.role_keys.length) return formError(form, 'יש לסמן לפחות תחום אחד');
       if (kind === 'company' && !body.company_key) return formError(form, 'יש לבחור פלוגה');
       return busy(s.$('[form=perm-form]'), async () => {
         try {
@@ -103,7 +103,7 @@ export async function renderUsers(ctx) {
       });
     });
     // picking a role or company selects its option
-    s.$('#p-role').addEventListener('change', () => { form.kind.value = 'officer'; });
+    s.$('#p-roles').addEventListener('change', () => { form.kind.value = 'officer'; });
     s.$('#p-co').addEventListener('change', () => { form.kind.value = 'company'; });
   }
 

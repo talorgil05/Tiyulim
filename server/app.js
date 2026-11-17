@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
 import { hashPassword, verifyPassword, dummyVerify, newToken, tokenHash, randomPassword, AttemptLimiter } from './auth.js';
-import { ROLES, ROLE_KEYS, ROLE_LABEL, COMPANIES, KINDS, KIND_LABEL, ITEM, rolesFor, roleApplies, canManageUsers } from './constants.js';
+import { ROLES, ROLE_KEYS, ROLE_LABEL, COMPANIES, KINDS, KIND_LABEL, ITEM, rolesFor, roleApplies, canManageUsers, roleKeysOf } from './constants.js';
 import { normalizeName, isValidName, NAME_TAKEN_MSG } from './names.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -42,11 +42,17 @@ const phone10 = (v) => {
   return s;
 };
 
-const publicUser = (u) => u && ({
-  id: u.id, full_name: u.full_name, phone: u.phone, kind: u.kind, kind_label: KIND_LABEL[u.kind],
-  role_key: u.role_key, role_label: u.role_key ? ROLE_LABEL[u.role_key] : null, company_key: u.company_key,
-  active: !!u.active, created_at: u.created_at, onboarded: !!u.onboarded_at, can_manage_users: canManageUsers(u),
-});
+const publicUser = (u) => {
+  if (!u) return u;
+  const keys = roleKeysOf(u);
+  return {
+    id: u.id, full_name: u.full_name, phone: u.phone, kind: u.kind, kind_label: KIND_LABEL[u.kind],
+    role_key: keys[0] ?? null, role_keys: keys, role_label: keys.length ? keys.map((k) => ROLE_LABEL[k]).join(' + ') : null,
+    company_key: u.company_key, active: !!u.active, created_at: u.created_at, onboarded: !!u.onboarded_at, can_manage_users: canManageUsers(u),
+  };
+};
+/** Areas in the fixed display order. */
+const sortRoles = (keys) => ROLE_KEYS.filter((k) => keys.includes(k));
 
 /**
  * dbUrl: Turso URL (libsql://…) with authToken, or a local file path for development and tests.
@@ -76,7 +82,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
   const loginLimiter = new AttemptLimiter({ max: 8 });
   // a whole company may sign up together from one shared network (one public IP)
   const registerLimiter = new AttemptLimiter({ max: 150, windowMs: 60 * 60 * 1000 });
-  const userById = (id) => db.get('SELECT * FROM users WHERE id = ?', id);
+  const userById = async (id) => withRoles(await db.get('SELECT * FROM users WHERE id = ?', id));
 
   // ---------- live updates (server-sent events) ----------
   const sseClients = new Set();
@@ -106,7 +112,14 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
     if (!row) return null;
     if (row.expires_at < nowIso()) { await db.run('DELETE FROM sessions WHERE token_hash = ?', tokenHash(token)); return null; }
     if (!row.active || row.deleted_at) return null;
-    return row;
+    return withRoles(row);
+  }
+  /** Attach role_keys (all the officer's areas) to user rows; h = db or a transaction. */
+  async function withRoles(u, h = db) {
+    if (!u) return u;
+    u.role_keys = u.kind === 'officer' ? sortRoles((await h.all('SELECT role_key FROM user_roles WHERE user_id = ?', u.id)).map((r) => r.role_key)) : [];
+    if (u.kind === 'officer' && !u.role_keys.length && u.role_key) u.role_keys = [u.role_key];
+    return u;
   }
   async function startSession(res, req, userId) {
     const token = newToken();
@@ -220,7 +233,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
     if (!u.active) throw new HttpError(403, 'החשבון מושבת. פנו למג״ד', 'inactive');
     loginLimiter.reset(key);
     await startSession(res, req, u.id);
-    return { user: publicUser(u) };
+    return { user: publicUser(await withRoles(u)) };
   });
 
   route('POST', '/api/auth/logout', PUBLIC, async ({ req, res }) => {
@@ -276,16 +289,15 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
     const r = await shownRound();
     const round = roundView(r);
     if (user.kind === 'officer') {
-      // an officer sees only the rows of his own area, for every company
+      // an officer sees only the rows of his own areas (one block per area), for every company
       const all = await forms(r?.id, COMPANIES);
-      return {
-        round,
-        companies: all.map((f) => {
-          const mine = f.areas.find((x) => x.key === user.role_key);
-          if (!mine) return { company: f.company, applies: false, items: [], signed_count: 0, total: 0, done: false };
-          return { company: f.company, applies: true, items: mine.items, signed_count: mine.signed_count, total: mine.total, done: mine.done };
-        }),
-      };
+      const companiesOf = (key) => all.map((f) => {
+        const mine = f.areas.find((x) => x.key === key);
+        if (!mine) return { company: f.company, applies: false, items: [], signed_count: 0, total: 0, done: false };
+        return { company: f.company, applies: true, items: mine.items, signed_count: mine.signed_count, total: mine.total, done: mine.done };
+      });
+      const areas = roleKeysOf(user).map((key) => ({ key, label: ROLE_LABEL[key], companies: companiesOf(key) }));
+      return { round, areas, companies: areas[0]?.companies ?? [] };
     }
     if (user.kind === 'company') return { round, form: (await forms(r?.id, [user.company_key]))[0] };
     return { round, forms: await forms(r?.id, COMPANIES) };
@@ -297,17 +309,18 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
    */
   route('POST', '/api/sign', ['officer'], async ({ user, body }) => {
     const c = companyKey(body.company);
-    if (body.role !== undefined && body.role !== user.role_key) throw new HttpError(403, 'אפשר לחתום רק בשם התפקיד שלך', 'wrong_role');
-    if (!roleApplies(user.role_key, c)) throw conflict('התחום שלך לא רלוונטי לפלוגה הזו', 'not_relevant');
-    let keys;
-    if (body.item !== undefined) {
-      const it = ITEM[body.item];
-      if (!it) throw bad('שורה לא קיימת', 'item');
-      if (it.role_key !== user.role_key) throw new HttpError(403, 'אפשר לחתום רק על השורות של התחום שלך', 'wrong_role');
-      keys = [it.key];
-    } else {
-      keys = ROLES.find((r) => r.key === user.role_key).items.map((it) => it.key);
+    const mine = roleKeysOf(user);
+    // which of my areas: the row's area, else the one named in the request, else my only area
+    let role = body.item !== undefined ? ITEM[body.item]?.role_key : body.role;
+    if (body.item !== undefined && !role) throw bad('שורה לא קיימת', 'item');
+    if (body.role !== undefined && body.item !== undefined && body.role !== role) throw new HttpError(403, 'אפשר לחתום רק בשם התפקיד שלך', 'wrong_role');
+    if (role === undefined) {
+      if (mine.length > 1) throw bad('יש לבחור באיזה תחום לחתום', 'role');
+      role = mine[0];
     }
+    if (!mine.includes(role)) throw new HttpError(403, 'אפשר לחתום רק על השורות של התחומים שלך', 'wrong_role');
+    if (!roleApplies(role, c)) throw conflict('התחום הזה לא רלוונטי לפלוגה הזו', 'not_relevant');
+    const keys = body.item !== undefined ? [body.item] : ROLES.find((r) => r.key === role).items.map((it) => it.key);
     let added = 0;
     await db.tx(async (t) => {
       const r = await openRound(t);
@@ -315,7 +328,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
       const at = nowIso();
       for (const k of keys) {
         added += (await t.run(`INSERT OR IGNORE INTO signatures (round_id, company_key, item_key, role_key, user_id, signer_name, signed_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`, r.id, c, k, user.role_key, user.id, user.full_name, at)).changes;
+          VALUES (?, ?, ?, ?, ?, ?, ?)`, r.id, c, k, role, user.id, user.full_name, at)).changes;
       }
       if (!added) throw conflict(keys.length === 1 ? 'השורה הזו כבר נחתמה בסבב הנוכחי' : 'כל השורות שלך לפלוגה זו כבר נחתמו', 'already_signed');
     });
@@ -374,10 +387,13 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
   });
 
   // --- מג״ד: users and permissions ---
-  route('GET', '/api/users', USER_MANAGERS, async () => ({
-    users: (await db.all(`SELECT * FROM users WHERE deleted_at IS NULL
-      ORDER BY (kind = 'pending' AND active = 1) DESC, active DESC, kind, company_key, role_key, full_name`)).map(publicUser),
-  }));
+  route('GET', '/api/users', USER_MANAGERS, async () => {
+    const rows = await db.all(`SELECT * FROM users WHERE deleted_at IS NULL
+      ORDER BY (kind = 'pending' AND active = 1) DESC, active DESC, kind, company_key, role_key, full_name`);
+    const roles = await db.all('SELECT user_id, role_key FROM user_roles');
+    for (const u of rows) u.role_keys = u.kind === 'officer' ? sortRoles(roles.filter((r) => r.user_id === u.id).map((r) => r.role_key)) : [];
+    return { users: rows.map(publicUser) };
+  });
 
   /** Any מג״ד can give anyone any permission, including מג״ד. Only the last active מג״ד is protected. */
   async function guardLastAdmin(t, target) {
@@ -405,10 +421,18 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
       if (body.kind !== undefined) {
         const kind = KINDS.includes(body.kind) ? body.kind : null;
         if (!kind) throw bad('יש לבחור הרשאה', 'kind');
-        const rk = kind === 'officer' ? roleKey(body.role_key) : null;
+        // an officer may get one area or several (role_keys); role_key alone still works
+        let rks = [];
+        if (kind === 'officer') {
+          const given = Array.isArray(body.role_keys) ? body.role_keys : [body.role_key];
+          rks = sortRoles([...new Set(given.map(roleKey))]);
+          if (!rks.length) throw bad('יש לבחור לפחות תחום אחד', 'role');
+        }
         const ck = kind === 'company' ? companyKey(body.company_key) : null;
         if (kind !== 'admin') await guardLastAdmin(t, u);
-        await t.run('UPDATE users SET kind = ?, role_key = ?, company_key = ? WHERE id = ?', kind, rk, ck, u.id);
+        await t.run('UPDATE users SET kind = ?, role_key = ?, company_key = ? WHERE id = ?', kind, rks[0] ?? null, ck, u.id);
+        await t.run('DELETE FROM user_roles WHERE user_id = ?', u.id);
+        for (const k of rks) await t.run('INSERT INTO user_roles (user_id, role_key) VALUES (?, ?)', u.id, k);
       }
       if (body.active !== undefined) {
         const active = body.active ? 1 : 0;
@@ -416,7 +440,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
         if (!active) { await guardLastAdmin(t, u); await t.run('DELETE FROM sessions WHERE user_id = ?', u.id); }
         await t.run('UPDATE users SET active = ? WHERE id = ?', active, u.id);
       }
-      return t.get('SELECT * FROM users WHERE id = ?', u.id);
+      return withRoles(await t.get('SELECT * FROM users WHERE id = ?', u.id), t);
     });
     changed();
     return { user: publicUser(updated) };
@@ -451,6 +475,7 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
       await guardLastAdmin(t, u);
       await t.run(`UPDATE users SET full_name = ?, phone = '', password_hash = '!deleted', kind = 'pending', role_key = NULL, company_key = NULL,
         active = 0, deleted_at = ? WHERE id = ?`, `משתמש שנמחק #${u.id}`, nowIso(), u.id);
+      await t.run('DELETE FROM user_roles WHERE user_id = ?', u.id);
       await t.run('DELETE FROM sessions WHERE user_id = ?', u.id);
     });
     changed();

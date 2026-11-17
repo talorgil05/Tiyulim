@@ -357,3 +357,11 @@ a.who:hover { background: rgba(255,255,255,.1); }
 .area-name { flex: 1; font-weight: 800; }
 .area-st { display: flex; align-items: center; gap: .35rem; flex-wrap: wrap; font-weight: 700; font-size: .92rem; }
 .area .item-list { padding: 0 .6rem .6rem; }
+
+/* several areas per officer: checkbox grid in the permission sheet */
+.area-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: .35rem; margin-top: .5rem; }
+.area-chk { display: flex; align-items: center; gap: .4rem; padding: .35rem .5rem; border: 1.5px solid var(--line); border-radius: 9px; background: var(--card); cursor: pointer; font-size: .92rem; }
+.area-chk:has(input:checked) { border-color: var(--navy); background: var(--navy-soft); font-weight: 700; }
+.area-chk input { width: 18px; height: 18px; margin: 0; accent-color: var(--navy); flex: none; }
+.tabs { overflow-x: auto; }
+.tab { white-space: nowrap; }

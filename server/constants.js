@@ -1,7 +1,7 @@
 // Staff areas ("תחום אחריות"), in the order they are shown everywhere. Every row of an area is its own
 // signature, per company and round. The keys are stored in the database: never change an existing key.
 // `only`: the area applies only to these companies (the two קמב״ץ areas of הכש״י / הכש״מ).
-export const HACHSHI = ['א', 'ב', 'ג', 'ד'];
+export const HACHSHI = ['א', 'ב', 'ג', 'ד', 'עיט'];
 export const HACHSHAM = ['601', '603', '605', '607'];
 
 const area = (key, label, rows, only = null) => ({
@@ -48,7 +48,9 @@ export const LEGACY_ROLE_MAP = { rechev: 'rechev', lag: 'lag', kambatz: 'kambatz
 
 // This area may also manage users: permissions (everything except מג״ד), password reset, delete.
 export const USER_MANAGER_ROLE = 'tikshuv';
-export const canManageUsers = (u) => !!u && (u.kind === 'admin' || (u.kind === 'officer' && u.role_key === USER_MANAGER_ROLE));
+/** An officer may hold several areas (u.role_keys); role_key is the first of them. */
+export const roleKeysOf = (u) => (u?.kind === 'officer' ? (u.role_keys?.length ? u.role_keys : [u.role_key].filter(Boolean)) : []);
+export const canManageUsers = (u) => !!u && (u.kind === 'admin' || roleKeysOf(u).includes(USER_MANAGER_ROLE));
 
 export const KINDS = ['admin', 'officer', 'company', 'pending'];
 export const KIND_LABEL = { admin: 'מנהל — מג״ד', officer: 'קצין מטה', company: 'משתמש פלוגתי', pending: 'ממתין לשיוך' };
