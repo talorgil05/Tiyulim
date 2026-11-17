@@ -31,8 +31,11 @@ export default async function handler(req, res) {
   } catch (e) {
     ready = null;   // try again on the next request (e.g. after fixing a setting)
     console.error(e);
+    // a short reason helps fix a setting from the outside; secrets are cut out of it
+    let reason = `${e?.code || e?.name || 'Error'}: ${String(e?.message || '').slice(0, 160)}`;
+    for (const k of ['TURSO_AUTH_TOKEN', 'TURSO_DATABASE_URL']) if (env(k)) reason = reason.split(env(k)).join(`<${k}>`);
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify({ error: 'שגיאת שרת. נסו שוב', code: 'server' }));
+    res.end(JSON.stringify({ error: 'שגיאת שרת. נסו שוב', code: 'server_init', reason }));
   }
 }
