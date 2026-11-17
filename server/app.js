@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
 import { hashPassword, verifyPassword, dummyVerify, newToken, tokenHash, randomPassword, AttemptLimiter } from './auth.js';
-import { ROLES, ROLE_KEYS, ROLE_LABEL, COMPANIES, KINDS, KIND_LABEL, canManageUsers } from './constants.js';
+import { ROLES, ROLE_KEYS, ROLE_LABEL, COMPANIES, KINDS, KIND_LABEL, ITEM, rolesFor, roleApplies, canManageUsers } from './constants.js';
 import { normalizeName, isValidName, NAME_TAKEN_MSG } from './names.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -124,20 +124,34 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
     closed_at: r.closed_at, closed_by_name: r.closed_by_name,
   });
 
-  /** Forms of the given companies in a round: every role with its signature (or null) + the approval. */
+  /**
+   * Forms of the given companies in a round: every area that applies to the company, each with its rows
+   * (signed or not, by whom and when), plus the מג״ד's approval. Rounds from before the rows existed
+   * have one "<area>.legacy" signature per area instead; they are shown as `legacy` on the area.
+   */
   async function forms(roundId, companies) {
     const sigs = roundId ? await db.all('SELECT * FROM signatures WHERE round_id = ?', roundId) : [];
     const apps = roundId ? await db.all('SELECT * FROM approvals WHERE round_id = ?', roundId) : [];
     return companies.map((c) => {
-      const roles = ROLES.map((r) => {
-        const s = sigs.find((x) => x.company_key === c && x.role_key === r.key);
-        return { key: r.key, label: r.label, signed: !!s, signer_name: s?.signer_name ?? null, signed_at: s?.signed_at ?? null };
+      const mine = sigs.filter((x) => x.company_key === c);
+      const areas = rolesFor(c).map((r) => {
+        const items = r.items.map((it) => {
+          const s = mine.find((x) => x.item_key === it.key);
+          return { key: it.key, label: it.label, signed: !!s, signer_name: s?.signer_name ?? null, signed_at: s?.signed_at ?? null };
+        });
+        const old = mine.find((x) => x.item_key === `${r.key}.legacy`);
+        const signed = items.filter((i) => i.signed).length;
+        return {
+          key: r.key, label: r.label, items, signed_count: signed, total: items.length, done: signed === items.length,
+          legacy: old ? { signer_name: old.signer_name, signed_at: old.signed_at } : null,
+        };
       });
       const a = apps.find((x) => x.company_key === c);
-      const signedCount = roles.filter((r) => r.signed).length;
-      const status = a ? 'approved' : signedCount === ROLES.length ? 'awaiting_approval' : 'awaiting_signatures';
+      const signedCount = areas.reduce((n, ar) => n + ar.signed_count, 0);
+      const total = areas.reduce((n, ar) => n + ar.total, 0);
+      const status = a ? 'approved' : signedCount === total ? 'awaiting_approval' : 'awaiting_signatures';
       return {
-        company: c, roles, signed_count: signedCount, total: ROLES.length, status,
+        company: c, areas, signed_count: signedCount, total, areas_done: areas.filter((ar) => ar.done).length, areas_total: areas.length, status,
         approval: a ? { approver_name: a.approver_name, approved_at: a.approved_at } : null,
       };
     });
@@ -262,12 +276,14 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
     const r = await shownRound();
     const round = roundView(r);
     if (user.kind === 'officer') {
+      // an officer sees only the rows of his own area, for every company
       const all = await forms(r?.id, COMPANIES);
       return {
         round,
         companies: all.map((f) => {
-          const mine = f.roles.find((x) => x.key === user.role_key);
-          return { company: f.company, signed: mine.signed, signer_name: mine.signer_name, signed_at: mine.signed_at };
+          const mine = f.areas.find((x) => x.key === user.role_key);
+          if (!mine) return { company: f.company, applies: false, items: [], signed_count: 0, total: 0, done: false };
+          return { company: f.company, applies: true, items: mine.items, signed_count: mine.signed_count, total: mine.total, done: mine.done };
         }),
       };
     }
@@ -275,19 +291,36 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
     return { round, forms: await forms(r?.id, COMPANIES) };
   });
 
-  /** A staff officer signs for one company — always in the name of the role on their own account. */
+  /**
+   * A staff officer signs for one company — always in the name of the area on his own account.
+   * { company, item }: one row.  { company } without item: every row of his that is still unsigned.
+   */
   route('POST', '/api/sign', ['officer'], async ({ user, body }) => {
     const c = companyKey(body.company);
     if (body.role !== undefined && body.role !== user.role_key) throw new HttpError(403, 'אפשר לחתום רק בשם התפקיד שלך', 'wrong_role');
+    if (!roleApplies(user.role_key, c)) throw conflict('התחום שלך לא רלוונטי לפלוגה הזו', 'not_relevant');
+    let keys;
+    if (body.item !== undefined) {
+      const it = ITEM[body.item];
+      if (!it) throw bad('שורה לא קיימת', 'item');
+      if (it.role_key !== user.role_key) throw new HttpError(403, 'אפשר לחתום רק על השורות של התחום שלך', 'wrong_role');
+      keys = [it.key];
+    } else {
+      keys = ROLES.find((r) => r.key === user.role_key).items.map((it) => it.key);
+    }
+    let added = 0;
     await db.tx(async (t) => {
       const r = await openRound(t);
       if (!r) throw conflict('אין סבב פתוח. אי אפשר לחתום כרגע', 'no_round');
-      const res = await t.run(`INSERT OR IGNORE INTO signatures (round_id, company_key, role_key, user_id, signer_name, signed_at)
-        VALUES (?, ?, ?, ?, ?, ?)`, r.id, c, user.role_key, user.id, user.full_name, nowIso());
-      if (!res.changes) throw conflict('כבר נחתם לפלוגה זו בסבב הנוכחי', 'already_signed');
+      const at = nowIso();
+      for (const k of keys) {
+        added += (await t.run(`INSERT OR IGNORE INTO signatures (round_id, company_key, item_key, role_key, user_id, signer_name, signed_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`, r.id, c, k, user.role_key, user.id, user.full_name, at)).changes;
+      }
+      if (!added) throw conflict(keys.length === 1 ? 'השורה הזו כבר נחתמה בסבב הנוכחי' : 'כל השורות שלך לפלוגה זו כבר נחתמו', 'already_signed');
     });
     changed();
-    return { ok: true };
+    return { ok: true, signed: added };
   });
 
   // --- מג״ד: rounds and final approval ---
@@ -316,8 +349,10 @@ export async function createApp({ dbUrl, authToken, setupCode, clock = () => new
     await db.tx(async (t) => {
       const r = await openRound(t);
       if (!r) throw conflict('אין סבב פתוח', 'no_round');
-      const { n } = await t.get('SELECT COUNT(*) AS n FROM signatures WHERE round_id = ? AND company_key = ?', r.id, c);
-      if (n < ROLES.length) throw conflict(`חסרות חתימות (${n}/${ROLES.length}). אי אפשר לאשר עדיין`, 'missing_signatures');
+      const needed = rolesFor(c).flatMap((ro) => ro.items.map((it) => it.key));
+      const have = new Set((await t.all('SELECT item_key FROM signatures WHERE round_id = ? AND company_key = ?', r.id, c)).map((x) => x.item_key));
+      const n = needed.filter((k) => have.has(k)).length;
+      if (n < needed.length) throw conflict(`חסרות חתימות (${n}/${needed.length}). אי אפשר לאשר עדיין`, 'missing_signatures');
       const res = await t.run('INSERT OR IGNORE INTO approvals (round_id, company_key, user_id, approver_name, approved_at) VALUES (?, ?, ?, ?, ?)',
         r.id, c, user.id, user.full_name, nowIso());
       if (!res.changes) throw conflict('הטופס כבר אושר', 'already_approved');

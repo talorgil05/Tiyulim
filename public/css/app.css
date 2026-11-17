@@ -333,3 +333,27 @@ a.who:hover { background: rgba(255,255,255,.1); }
 .install-bar span { flex: 1; font-size: .92rem; line-height: 1.35; }
 .install-bar .go { flex: none; border: 0; border-radius: 10px; background: #F57C00; color: #fff; font: inherit; font-weight: 800; padding: 9px 16px; cursor: pointer; }
 .install-bar .x { flex: none; width: 36px; height: 36px; border: 0; border-radius: 10px; background: transparent; color: inherit; cursor: pointer; font-size: 1.1rem; }
+
+/* ---------- per-row signatures (areas) ---------- */
+.co.na { opacity: .55; }
+.sign-panel { text-align: start; justify-items: stretch; }
+.sign-panel .sign-co, .sign-panel .sign-role, .sign-count { text-align: center; }
+.sign-count { margin: -.6rem 0 .6rem; font-weight: 800; color: var(--ink-2); }
+.item-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .4rem; }
+.item-row { display: flex; align-items: center; gap: .4rem .8rem; flex-wrap: wrap; padding: .55rem .8rem; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.item-row.signed { background: var(--ok-soft); border-color: var(--ok-line); }
+.item-name { flex: 1; min-width: 10rem; font-weight: 700; }
+.item-st { display: flex; align-items: center; gap: .35rem; flex-wrap: wrap; font-weight: 700; }
+.item-btn { min-width: 84px; }
+.sign-all { display: grid; justify-items: center; margin-top: 1.1rem; }
+.sign-all .btn-sign { min-height: 86px; font-size: 1.35rem; }
+.areas { display: grid; gap: .45rem; }
+.area { border: 1.5px solid var(--line); border-radius: 12px; background: var(--card); }
+.area.done { border-color: var(--ok-line); }
+.area > summary { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; padding: .65rem .9rem; cursor: pointer; list-style: none; }
+.area > summary::-webkit-details-marker { display: none; }
+.area > summary::before { content: '›'; color: var(--orange); font-weight: 900; transform: rotate(180deg); transition: transform .15s; }
+.area[open] > summary::before { transform: rotate(90deg); }
+.area-name { flex: 1; font-weight: 800; }
+.area-st { display: flex; align-items: center; gap: .35rem; flex-wrap: wrap; font-weight: 700; font-size: .92rem; }
+.area .item-list { padding: 0 .6rem .6rem; }

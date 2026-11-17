@@ -237,24 +237,44 @@ function renderPending() {
   app.querySelector('[data-install-guide]').addEventListener('click', openInstallGuide);
 }
 
-// ---------- staff officer ----------
+// ---------- staff officer: pick a company, sign the rows of my area ----------
+const partial = (n, total) => `<span class="mark wait" aria-hidden="true">…</span><span class="st-wait">${n}/${total}</span>`;
+const officerStatus = (c) => !c.applies ? '<span class="st-no">לא רלוונטי</span>'
+  : c.done ? yes('חתמתי') : c.signed_count ? partial(c.signed_count, c.total) : no('טרם חתמתי');
+
 function renderOfficer() {
   const { round, companies } = state;
   const open = round?.status === 'open';
   if (!selected || !companies.some((c) => c.company === selected)) {
-    selected = (companies.find((c) => !c.signed) || companies[0]).company;
+    selected = (companies.find((c) => c.applies && !c.done) || companies.find((c) => c.applies) || companies[0]).company;
   }
   const cur = companies.find((c) => c.company === selected);
   const list = companies.map((c) => `
-    <button class="co" data-co="${esc(c.company)}" aria-current="${c.company === selected}">
+    <button class="co ${c.applies ? '' : 'na'}" data-co="${esc(c.company)}" aria-current="${c.company === selected}">
       <span class="co-name">${esc(coName(c.company))}</span>
-      <span class="co-st">${c.signed ? yes('חתמתי') : no('טרם חתמתי')}</span>
+      <span class="co-st">${officerStatus(c)}</span>
     </button>`).join('');
-  const button = cur.signed
-    ? `<button class="btn-sign done" disabled>חתמתי ✓</button>
-       <p class="sign-meta">נחתם על ידי <b>${esc(cur.signer_name)}</b><br>${esc(fmtStamp(cur.signed_at))}</p>`
-    : `<button class="btn-sign" data-sign ${open ? '' : 'disabled'}>אישור חתימה</button>
-       ${open ? '' : '<p class="sign-meta">אין סבב פתוח. החתימה תתאפשר כשהמג״ד יפתח סבב</p>'}`;
+  let body;
+  if (!cur.applies) {
+    body = `<p class="muted">התחום <b>${esc(me.role_label)}</b> לא רלוונטי ל${esc(coName(cur.company))}. אין כאן מה לחתום.</p>`;
+  } else {
+    const rows = cur.items.map((it) => `
+      <li class="item-row ${it.signed ? 'signed' : ''}">
+        <span class="item-name">${esc(it.label)}</span>
+        ${it.signed
+          ? `<span class="item-st">${yes('חתום')}<span class="role-by">${esc(it.signer_name)} · ${esc(fmtStamp(it.signed_at))}</span></span>`
+          : `<button class="btn btn-sm btn-primary item-btn" data-item="${esc(it.key)}" ${open ? '' : 'disabled'}>חתום</button>`}
+      </li>`).join('');
+    const left = cur.total - cur.signed_count;
+    const label = left === cur.total ? 'חתימה על כל השורות' : left === 1 ? 'חתימה על השורה שנשארה' : `חתימה על ${left} השורות שנשארו`;
+    const all = cur.done
+      ? '<button class="btn-sign done" disabled>חתמתי על הכל ✓</button>'
+      : `<button class="btn-sign" data-sign-all ${open ? '' : 'disabled'}>${label}</button>`;
+    body = `
+      <p class="sign-count">${cur.signed_count}/${cur.total} שורות נחתמו</p>
+      <ul class="item-list">${rows}</ul>
+      <div class="sign-all">${all}${open ? '' : '<p class="sign-meta">אין סבב פתוח. החתימה תתאפשר כשהמג״ד יפתח סבב</p>'}</div>`;
+  }
   shell(`
     ${round && open ? '' : roundBar(round)}
     <div class="split">
@@ -262,56 +282,63 @@ function renderOfficer() {
       <section class="panel sign-panel" aria-live="polite">
         <h1 class="sign-co">${esc(coName(cur.company))}</h1>
         <p class="sign-role">חותם/ת בתור: <b>${esc(me.role_label)}</b></p>
-        ${button}
+        ${body}
       </section>
     </div>`);
   app.querySelectorAll('[data-co]').forEach((b) => b.addEventListener('click', () => {
     selected = b.dataset.co; renderOfficer();
-    if (matchMedia('(max-width: 760px)').matches) app.querySelector('.sign-panel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (matchMedia('(max-width: 760px)').matches) app.querySelector('.sign-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }));
-  app.querySelector('[data-sign]')?.addEventListener('click', async (e) => {
-    e.currentTarget.disabled = true;
-    try {
-      await api.post('/api/sign', { company: cur.company });
-      toast(`נחתם ל${coName(cur.company)} ✓`, 'ok');
-      offerInstallBar();
-    } catch (ex) { toast(ex.message, 'error'); }
+  const sign = async (btn, extra, okText) => {
+    btn.disabled = true;
+    try { await api.post('/api/sign', { company: cur.company, ...extra }); toast(okText, 'ok'); offerInstallBar(); }
+    catch (ex) { toast(ex.message, 'error'); }
     await refresh();
-  });
+  };
+  app.querySelectorAll('[data-item]').forEach((b) => b.addEventListener('click', () => sign(b, { item: b.dataset.item }, 'נחתם ✓')));
+  app.querySelector('[data-sign-all]')?.addEventListener('click', (e) => sign(e.currentTarget, {}, `כל השורות שלך ל${coName(cur.company)} נחתמו ✓`));
 }
 
-// ---------- company form (read-only) ----------
+// ---------- company form (read-only): by area, each row its own signature ----------
 const FINAL_TEXT = {
   awaiting_signatures: 'ממתינים לחתימות קציני המטה',
   awaiting_approval: 'כל קציני המטה חתמו — ממתינים לאישור מג״ד',
   approved: 'הטופס אושר על ידי המג״ד',
 };
-function formView(f) {
-  const rows = f.roles.map((r) => `
-    <li class="role-row ${r.signed ? 'signed' : ''}">
-      <span class="role-name">${esc(r.label)}</span>
-      <span class="role-st">${r.signed
-        ? `${yes('חתם')} <span class="role-by">${esc(r.signer_name)} · ${esc(fmtStamp(r.signed_at))}</span>`
-        : no('טרם חתם')}</span>
-    </li>`).join('');
+function formView(f, { openRound = false } = {}) {
+  const areas = f.areas.map((a) => {
+    const st = a.legacy && !a.signed_count
+      ? `${yes('נחתם')} <span class="role-by">${esc(a.legacy.signer_name)} · ${esc(fmtStamp(a.legacy.signed_at))} (גרסה קודמת)</span>`
+      : a.done ? yes('הושלם') : a.signed_count ? partial(a.signed_count, a.total) : no(`0/${a.total}`);
+    const rows = a.items.map((it) => `
+      <li class="item-row ${it.signed ? 'signed' : ''}">
+        <span class="item-name">${esc(it.label)}</span>
+        <span class="item-st">${it.signed ? `${yes('חתם')}<span class="role-by">${esc(it.signer_name)} · ${esc(fmtStamp(it.signed_at))}</span>` : no('טרם חתם')}</span>
+      </li>`).join('');
+    return `<details class="area ${a.done ? 'done' : ''}" ${openRound && !a.done && a.signed_count ? 'open' : ''}>
+      <summary><span class="area-name">${esc(a.label)}</span><span class="area-st">${st}</span></summary>
+      <ul class="item-list">${rows}</ul></details>`;
+  }).join('');
   const markFinal = f.status === 'approved' ? '<span class="mark yes" aria-hidden="true">✓</span>'
     : '<span class="mark wait" aria-hidden="true">…</span>';
   return `
-    <div class="form-head"><h1>${esc(coName(f.company))}</h1><span class="count">${f.signed_count}/${f.total} חתמו</span></div>
-    <ul class="roles">${rows}</ul>
+    <div class="form-head"><h1>${esc(coName(f.company))}</h1>
+      <span class="count">${f.areas_done}/${f.areas_total} תחומים · ${f.signed_count}/${f.total} שורות</span></div>
+    <p class="small muted" style="margin-top:-.4rem">לחיצה על תחום מציגה את השורות שלו, מי חתם ומתי.</p>
+    <div class="areas">${areas}</div>
     <div class="final ${f.status}" role="status">${markFinal}<div>אישור מג״ד: ${FINAL_TEXT[f.status]}
       ${f.approval ? `<small>אושר על ידי ${esc(f.approval.approver_name)} · ${esc(fmtStamp(f.approval.approved_at))}</small>` : ''}</div></div>`;
 }
 
 function renderCompany() {
   const { round, form } = state;
-  shell(`${roundBar(round)}<section class="panel">${round ? formView(form) : `<div class="form-head"><h1>${esc(coName(me.company_key))}</h1></div><p class="muted">הטופס יופיע כשהמג״ד יפתח סבב.</p>`}</section>`);
+  shell(`${roundBar(round)}<section class="panel">${round ? formView(form, { openRound: round.status === 'open' }) : `<div class="form-head"><h1>${esc(coName(me.company_key))}</h1></div><p class="muted">הטופס יופיע כשהמג״ד יפתח סבב.</p>`}</section>`);
 }
 
 // ---------- מג״ד ----------
 const coStatus = (f) => f.status === 'approved' ? yes('אושר')
-  : f.status === 'awaiting_approval' ? `<span class="mark wait" aria-hidden="true">!</span><span class="st-wait">לאישורך</span>`
-  : `<span class="mark no" aria-hidden="true"></span><span class="st-no">${f.signed_count}/${f.total}</span>`;
+  : f.status === 'awaiting_approval' ? '<span class="mark wait" aria-hidden="true">!</span><span class="st-wait">לאישורך</span>'
+  : `<span class="mark no" aria-hidden="true"></span><span class="st-no">${f.areas_done}/${f.areas_total}</span>`;
 
 function renderAdmin() {
   const { round, forms } = state;
@@ -329,14 +356,14 @@ function renderAdmin() {
     const ready = f.status === 'awaiting_approval';
     approve = `<div class="approve-box">
       <button class="btn-sign" data-approve ${ready && open ? '' : 'disabled'}>אישור סופי לטופס</button>
-      <span class="muted small">${!open ? 'הסבב נסגר — אין אפשרות לאשר' : ready ? 'כל קציני המטה חתמו' : `${f.total - f.signed_count === 1 ? 'חסרה חתימה אחת' : `חסרות ${f.total - f.signed_count} חתימות`} — האישור ייפתח כשכולם יחתמו`}</span>
+      <span class="muted small">${!open ? 'הסבב נסגר — אין אפשרות לאשר' : ready ? 'כל השורות נחתמו' : `${f.total - f.signed_count === 1 ? 'חסרה שורה אחת' : `חסרות ${f.total - f.signed_count} שורות`} — האישור ייפתח כשכל השורות ייחתמו`}</span>
     </div>`;
   }
   shell(`
     ${roundBar(round, { admin: true })}
     ${round ? `<div class="split">
       <nav class="co-list" aria-label="פלוגות"><h2>פלוגות · ${forms.filter((x) => x.status === 'approved').length}/${forms.length} אושרו</h2>${list}</nav>
-      <section class="panel">${formView(f)}${approve}</section>
+      <section class="panel">${formView(f, { openRound: open })}${approve}</section>
     </div>` : ''}`);
   app.querySelectorAll('[data-co]').forEach((b) => b.addEventListener('click', () => {
     selected = b.dataset.co; renderAdmin();

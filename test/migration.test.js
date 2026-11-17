@@ -21,7 +21,11 @@ test('v1 database → v2 (login by full name, phone, pending)', async () => {
   const cols = (await db.all('PRAGMA table_info(users)')).map((c) => c.name);
   assert.ok(!cols.includes('username'));
   assert.ok(cols.includes('onboarded_at') && cols.includes('deleted_at'));
-  assert.equal((await db.all('SELECT * FROM signatures')).length, 1);
+  // v3: the old whole-role signature is kept as one "<area>.legacy" row
+  const sigs = await db.all('SELECT * FROM signatures');
+  assert.equal(sigs.length, 1);
+  assert.equal(sigs[0].item_key, 'rechev.legacy');
+  assert.equal(sigs[0].signer_name, 'קצין רכב');
   assert.equal((await db.all('SELECT * FROM sessions')).length, 1);
   assert.deepEqual(await db.all('PRAGMA foreign_key_check'), []);
   // the new kind is accepted, and the setup triggers are back

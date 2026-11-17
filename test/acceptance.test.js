@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createApp } from '../server/app.js';
-import { ROLES, COMPANIES } from '../server/constants.js';
+import { ROLES, COMPANIES, rolesFor } from '../server/constants.js';
 
 const SETUP = 'setup-code-123456';
 let server, db, base, dir;
@@ -109,8 +109,8 @@ test('everyone registers; the מג״ד assigns each a role or company; others ca
   assert.ok(Array.isArray((await officers.rechev.get('/api/state')).data.companies));
 });
 
-test('קשר״ג assigns every permission except מג״ד', async () => {
-  const k = officers.kashrag;
+test('תקשוב assigns every permission except מג״ד', async () => {
+  const k = officers.tikshuv;
   assert.equal((await k.get('/api/auth/me')).data.user.can_manage_users, true);
   assert.equal((await officers.rechev.get('/api/auth/me')).data.user.can_manage_users, false);
   assert.equal((await k.get('/api/users')).status, 200);
@@ -126,12 +126,12 @@ test('קשר״ג assigns every permission except מג״ד', async () => {
   const magad = await idOf('סא״ל ישראל');
   assert.equal((await k.patch(`/api/users/${id}`, { kind: 'admin' })).data.code, 'admin_only');
   assert.equal((await k.patch(`/api/users/${magad}`, { kind: 'pending' })).data.code, 'admin_only');
-  assert.equal((await k.patch(`/api/users/${await idOf('קצין קשר״ג')}`, { kind: 'officer', role_key: 'rechev' })).data.code, 'self');
+  assert.equal((await k.patch(`/api/users/${await idOf('קצין תקשוב')}`, { kind: 'officer', role_key: 'rechev' })).data.code, 'self');
   assert.equal((await k.patch(`/api/users/${id}`, { active: false })).status, 403);
   // a מג״ד's password and account are off limits
   assert.equal((await k.post(`/api/users/${magad}/reset-password`)).data.code, 'admin_only');
   assert.equal((await k.post(`/api/users/${magad}/delete`, { confirm_name: 'סא״ל ישראל' })).data.code, 'admin_only');
-  assert.equal((await k.post(`/api/users/${await idOf('קצין קשר״ג')}/delete`, { confirm_name: 'קצין קשר״ג' })).data.code, 'self');
+  assert.equal((await k.post(`/api/users/${await idOf('קצין תקשוב')}/delete`, { confirm_name: 'קצין תקשוב' })).data.code, 'self');
   // allowed: password reset and delete of anyone else
   const { password } = (await k.post(`/api/users/${id}/reset-password`)).data;
   assert.equal((await newbie.get('/api/auth/me')).status, 401);
@@ -180,36 +180,61 @@ test('only the מג״ד opens a round', async () => {
   assert.equal((await admin.post('/api/rounds/open')).status, 409);   // already open
 });
 
-test('officer signs once, only in the name of their own role', async () => {
-  assert.equal((await officers.rechev.post('/api/sign', { company: 'א' })).status, 200);
-  const again = await officers.rechev.post('/api/sign', { company: 'א' });
+test('officer signs row by row, or all his rows at once — only in the name of his own area', async () => {
+  const rechev = ROLES.find((r) => r.key === 'rechev');
+  // one row
+  assert.equal((await officers.rechev.post('/api/sign', { company: 'א', item: rechev.items[0].key })).status, 200);
+  const again = await officers.rechev.post('/api/sign', { company: 'א', item: rechev.items[0].key });
   assert.equal(again.status, 409);
   assert.equal(again.data.code, 'already_signed');
-  // trying to sign as another role is refused
+  let a = (await officers.rechev.get('/api/state')).data.companies.find((c) => c.company === 'א');
+  assert.equal(a.signed_count, 1);
+  assert.equal(a.total, rechev.items.length);
+  assert.equal(a.done, false);
+  assert.equal(a.items[0].signer_name, 'קצין רכב');
+  assert.ok(a.items[0].signed_at);
+  // another area's row, or another role: refused
+  assert.equal((await officers.rechev.post('/api/sign', { company: 'א', item: 'lag.1' })).data.code, 'wrong_role');
   assert.equal((await officers.rechev.post('/api/sign', { company: 'א', role: 'lag' })).status, 403);
+  assert.equal((await officers.rechev.post('/api/sign', { company: 'א', item: 'nope.1' })).status, 400);
+  // "sign all" signs only what is left
+  const all = await officers.rechev.post('/api/sign', { company: 'א' });
+  assert.equal(all.status, 200);
+  assert.equal(all.data.signed, rechev.items.length - 1);
+  assert.equal((await officers.rechev.post('/api/sign', { company: 'א' })).data.code, 'already_signed');
+  a = (await officers.rechev.get('/api/state')).data.companies.find((c) => c.company === 'א');
+  assert.equal(a.done, true);
   // company users and the מג״ד cannot sign at all
   assert.equal((await companies['א'].post('/api/sign', { company: 'א' })).status, 403);
   assert.equal((await admin.post('/api/sign', { company: 'א' })).status, 403);
   assert.equal((await officers.rechev.post('/api/sign', { company: 'לא קיימת' })).status, 400);
-
   const st = (await officers.rechev.get('/api/state')).data;
-  const a = st.companies.find((c) => c.company === 'א');
-  assert.equal(a.signed, true);
-  assert.equal(a.signer_name, 'קצין ק. רכב');
-  assert.ok(a.signed_at);
-  assert.equal(st.companies.find((c) => c.company === 'ב').signed, false);
-  assert.equal(st.forms, undefined);   // an officer never gets other roles' data
+  assert.equal(st.companies.find((c) => c.company === 'ב').signed_count, 0);
+  assert.equal(st.forms, undefined);   // an officer never gets other areas' data
 });
 
-test('company user sees only its own form', async () => {
+test('הכש״י / הכש״מ areas sign only for their own companies', async () => {
+  assert.equal((await officers.kambatz_hachsham.post('/api/sign', { company: 'א' })).data.code, 'not_relevant');
+  assert.equal((await officers.kambatz_hachshi.post('/api/sign', { company: '601' })).data.code, 'not_relevant');
+  assert.equal((await officers.kambatz_hachshi.post('/api/sign', { company: 'עיט' })).data.code, 'not_relevant');
+  const view = (await officers.kambatz_hachshi.get('/api/state')).data.companies;
+  assert.equal(view.find((c) => c.company === 'א').applies, true);
+  assert.equal(view.find((c) => c.company === '601').applies, false);
+  const keysOf = async (co) => (await admin.get('/api/state')).data.forms.find((f) => f.company === co).areas.map((x) => x.key);
+  assert.ok((await keysOf('א')).includes('kambatz_hachshi') && !(await keysOf('א')).includes('kambatz_hachsham'));
+  assert.ok((await keysOf('601')).includes('kambatz_hachsham') && !(await keysOf('601')).includes('kambatz_hachshi'));
+  assert.ok(!(await keysOf('מפקדה')).includes('kambatz_hachshi') && !(await keysOf('מפקדה')).includes('kambatz_hachsham'));
+});
+
+test('company user sees only its own form, by area and row', async () => {
   const st = (await companies['א'].get('/api/state')).data;
   assert.equal(st.form.company, 'א');
   assert.equal(st.forms, undefined);
-  assert.equal(st.form.signed_count, 1);
+  assert.equal(st.form.signed_count, ROLES.find((r) => r.key === 'rechev').items.length);
   assert.equal(st.form.status, 'awaiting_signatures');
-  const rechev = st.form.roles.find((r) => r.key === 'rechev');
-  assert.equal(rechev.signed, true);
-  assert.equal(rechev.signer_name, 'קצין ק. רכב');
+  const area = st.form.areas.find((r) => r.key === 'rechev');
+  assert.equal(area.done, true);
+  assert.equal(area.items[0].signer_name, 'קצין רכב');
   // another company's form shows nothing of א
   const b = (await companies['ב'].get('/api/state')).data;
   assert.equal(b.form.company, 'ב');
@@ -217,24 +242,27 @@ test('company user sees only its own form', async () => {
   // history (all companies) is the מג״ד's only
   assert.equal((await companies['א'].get('/api/rounds')).status, 403);
   assert.equal((await companies['א'].get('/api/rounds/1')).status, 403);
-  // and it cannot approve
   assert.equal((await companies['א'].post('/api/approve', { company: 'א' })).status, 403);
 });
 
-test('final approval is blocked while a signature is missing', async () => {
-  for (const r of ROLES.slice(1, -1)) assert.equal((await officers[r.key].post('/api/sign', { company: 'א' })).status, 200);
-  const st = (await admin.get('/api/state')).data.forms.find((f) => f.company === 'א');
-  assert.equal(st.signed_count, ROLES.length - 1);
+test('final approval is blocked while one row is missing', async () => {
+  const areasA = rolesFor('א');
+  for (const r of areasA) if (r.key !== 'rechev' && r.key !== 'samgad') assert.equal((await officers[r.key].post('/api/sign', { company: 'א' })).status, 200, r.key);
+  const samgad = ROLES.find((r) => r.key === 'samgad');
+  for (const it of samgad.items.slice(0, -1)) assert.equal((await officers.samgad.post('/api/sign', { company: 'א', item: it.key })).status, 200);
+  const f = (await admin.get('/api/state')).data.forms.find((x) => x.company === 'א');
+  assert.equal(f.signed_count, f.total - 1);
   const r = await admin.post('/api/approve', { company: 'א' });
   assert.equal(r.status, 409);
   assert.equal(r.data.code, 'missing_signatures');
 });
 
-test('all signed → waiting for the מג״ד (no automatic approval) → מג״ד approves', async () => {
-  const last = ROLES[ROLES.length - 1].key;
-  assert.equal((await officers[last].post('/api/sign', { company: 'א' })).status, 200);
+test('all rows signed → waiting for the מג״ד (no automatic approval) → מג״ד approves', async () => {
+  const samgad = ROLES.find((r) => r.key === 'samgad');
+  assert.equal((await officers.samgad.post('/api/sign', { company: 'א', item: samgad.items.at(-1).key })).status, 200);
   let form = (await companies['א'].get('/api/state')).data.form;
-  assert.equal(form.signed_count, ROLES.length);
+  assert.equal(form.signed_count, form.total);
+  assert.equal(form.areas_done, form.areas_total);
   assert.equal(form.status, 'awaiting_approval');
   assert.equal(form.approval, null);
 
@@ -246,7 +274,6 @@ test('all signed → waiting for the מג״ד (no automatic approval) → מג״
   assert.equal(form.status, 'approved');
   assert.equal(form.approval.approver_name, 'סא״ל ישראל');
   assert.ok(form.approval.approved_at);
-  // ב is untouched
   assert.equal((await admin.get('/api/state')).data.forms.find((f) => f.company === 'ב').status, 'awaiting_signatures');
 });
 
@@ -257,7 +284,6 @@ test('closing the round locks it', async () => {
   assert.equal(s.status, 409);
   assert.equal(s.data.code, 'no_round');
   assert.equal((await admin.post('/api/approve', { company: 'ב' })).status, 409);
-  // still visible, read-only
   const st = (await companies['א'].get('/api/state')).data;
   assert.equal(st.round.status, 'closed');
   assert.equal(st.form.status, 'approved');
@@ -272,17 +298,15 @@ test('a new round starts clean; the previous one stays in history', async () => 
     assert.equal(f.signed_count, 0, f.company);
     assert.equal(f.approval, null);
   }
-  assert.equal((await officers.rechev.get('/api/state')).data.companies.every((c) => !c.signed), true);
+  assert.equal((await officers.rechev.get('/api/state')).data.companies.every((c) => c.signed_count === 0), true);
   assert.equal((await companies['א'].get('/api/state')).data.form.status, 'awaiting_signatures');
-
-  // officer can sign again in the new round
   assert.equal((await officers.rechev.post('/api/sign', { company: 'א' })).status, 200);
 
   const hist = (await admin.get('/api/rounds')).data.rounds;
   assert.deepEqual(hist.map((h) => [h.number, h.status, h.approved]), [[2, 'open', 0], [1, 'closed', 1]]);
   const old = (await admin.get(`/api/rounds/${hist[1].id}`)).data;
   const a = old.forms.find((f) => f.company === 'א');
-  assert.equal(a.signed_count, ROLES.length);
+  assert.equal(a.signed_count, a.total);
   assert.equal(a.approval.approver_name, 'סא״ל ישראל');
 });
 
@@ -291,7 +315,7 @@ test('profile: name and phone; password change logs out other sessions', async (
   await other.post('/api/auth/login', { full_name: 'קצין קל״ג', password: PW });
   const lag = officers.lag;
   assert.equal((await lag.patch('/api/profile', { full_name: 'קצין קל״ג', phone: '12' })).status, 400);
-  assert.equal((await lag.patch('/api/profile', { full_name: 'קצין ק. רכב', phone: nextPhone() })).data.code, 'name_taken');
+  assert.equal((await lag.patch('/api/profile', { full_name: 'קצין רכב', phone: nextPhone() })).data.code, 'name_taken');
   const ok = await lag.patch('/api/profile', { full_name: 'קצין קל״ג', phone: '0549998877' });
   assert.equal(ok.data.user.phone, '0549998877');
   assert.equal((await lag.post('/api/profile/password', { current_password: 'nope-nope', new_password: 'newpass12' })).data.code, 'bad_password');
@@ -309,25 +333,25 @@ test('tour is remembered on the account', async () => {
 });
 
 test('deactivate, reset password, delete (history keeps the name)', async () => {
-  const klia = await idOf('קצין ק. קליעה');
+  const klia = await idOf('קצין קליעה');
   assert.equal((await admin.patch(`/api/users/${klia}`, { active: false })).status, 200);
   assert.equal((await officers.klia.get('/api/state')).status, 401);
-  assert.equal((await client().post('/api/auth/login', { full_name: 'קצין ק. קליעה', password: PW })).status, 403);
+  assert.equal((await client().post('/api/auth/login', { full_name: 'קצין קליעה', password: PW })).status, 403);
   assert.equal((await admin.patch(`/api/users/${await idOf('סא״ל ישראל')}`, { active: false })).status, 409);   // not yourself
 
-  const { password } = (await admin.post(`/api/users/${await idOf('קצין קשר״ג')}/reset-password`)).data;
-  assert.equal((await officers.kashrag.get('/api/state')).status, 401);
-  assert.equal((await client().post('/api/auth/login', { full_name: 'קצין קשר״ג', password })).status, 200);
+  const { password } = (await admin.post(`/api/users/${await idOf('קצין תקשוב')}/reset-password`)).data;
+  assert.equal((await officers.tikshuv.get('/api/state')).status, 401);
+  assert.equal((await client().post('/api/auth/login', { full_name: 'קצין תקשוב', password })).status, 200);
 
   // ק. רכב signed in round 1 and round 2; delete him
-  const rechev = await idOf('קצין ק. רכב');
+  const rechev = await idOf('קצין רכב');
   assert.equal((await admin.post(`/api/users/${rechev}/delete`, { confirm_name: 'שם אחר' })).status, 400);
-  assert.equal((await admin.post(`/api/users/${rechev}/delete`, { confirm_name: 'קצין ק. רכב' })).status, 200);
+  assert.equal((await admin.post(`/api/users/${rechev}/delete`, { confirm_name: 'קצין רכב' })).status, 200);
   assert.equal((await officers.rechev.get('/api/state')).status, 401);
   assert.equal((await users()).some((u) => u.id === rechev), false);
   const hist = (await admin.get('/api/rounds')).data.rounds;
   const old = (await admin.get(`/api/rounds/${hist[hist.length - 1].id}`)).data;
-  assert.equal(old.forms.find((f) => f.company === 'א').roles.find((r) => r.key === 'rechev').signer_name, 'קצין ק. רכב');
+  assert.equal(old.forms.find((f) => f.company === 'א').areas.find((r) => r.key === 'rechev').items[0].signer_name, 'קצין רכב');
   // the name is free again
-  assert.equal((await client().post('/api/auth/register', { full_name: 'קצין ק. רכב', phone: nextPhone(), password: PW })).status, 200);
+  assert.equal((await client().post('/api/auth/register', { full_name: 'קצין רכב', phone: nextPhone(), password: PW })).status, 200);
 });

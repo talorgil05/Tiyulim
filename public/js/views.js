@@ -18,7 +18,7 @@ export async function renderUsers(ctx) {
   const { users } = await api.get('/api/users');
   const { meta } = ctx;
   const me = ctx.user;
-  // the קשר״ג manages permissions too — everything except מג״ד, and not the מג״ד's accounts or his own
+  // the תקשוב officer manages permissions too — everything except מג״ד, and not the מג״ד's accounts or his own
   const isAdmin = me.kind === 'admin';
   const canEdit = (u) => isAdmin || (u.kind !== 'admin' && u.id !== me.id);
   const active = users.filter((u) => u.active);
@@ -175,13 +175,20 @@ export async function renderHistory(ctx) {
       </button>`).join('') : '<p class="muted">אין עדיין סבבים.</p>'}`);
   document.querySelectorAll('[data-round]').forEach((b) => b.addEventListener('click', async () => {
     const { round, forms } = await api.get(`/api/rounds/${b.dataset.round}`);
+    // companies × areas: ✓ = every row signed, n/m = partly, ○ = nothing, — = area not relevant
     const head = ctx.meta.roles.map((r) => `<th scope="col">${esc(r.label)}</th>`).join('');
+    const cell = (a) => {
+      if (!a) return '<td class="muted" title="לא רלוונטי">—<span class="sr-only">לא רלוונטי</span></td>';
+      if (a.legacy && !a.signed_count) return `<td title="${esc(`${a.legacy.signer_name} · ${fmtStamp(a.legacy.signed_at)}`)}">✓<span class="sr-only">נחתם</span></td>`;
+      const who = a.items.filter((i) => i.signed).map((i) => `${i.label}: ${i.signer_name} · ${fmtStamp(i.signed_at)}`).join('\n');
+      return `<td title="${esc(who || 'טרם נחתם')}">${a.done ? '✓' : a.signed_count ? `${a.signed_count}/${a.total}` : '○'}<span class="sr-only">${a.done ? 'הושלם' : 'לא הושלם'}</span></td>`;
+    };
     const rows = forms.map((f) => `<tr><th scope="row">${esc(coName(f.company))}</th>
-      ${f.roles.map((r) => `<td title="${esc(r.signed ? `${r.signer_name} · ${fmtStamp(r.signed_at)}` : 'טרם חתם')}">${r.signed ? '✓' : '○'}<span class="sr-only">${r.signed ? 'חתם' : 'טרם חתם'}</span></td>`).join('')}
+      ${ctx.meta.roles.map((r) => cell(f.areas.find((a) => a.key === r.key))).join('')}
       <td>${f.approval ? `✓ ${esc(f.approval.approver_name)}<div class="muted small">${esc(fmtStamp(f.approval.approved_at))}</div>` : '○ לא אושר'}</td></tr>`).join('');
     openSheet({
       wide: true, title: `סבב ${round.number}${round.status === 'closed' ? ' — נעול לצפייה' : ''}`,
-      body: `<p class="muted small">✓ = חתם · ○ = טרם חתם. במחשב, ריחוף על תא מציג את שם החותם והמועד.</p>
+      body: `<p class="muted small">✓ = כל השורות נחתמו · 2/4 = חלק · ○ = טרם נחתם · — = לא רלוונטי לפלוגה. במחשב, ריחוף על תא מציג מי חתם ומתי.</p>
         <div class="matrix-wrap"><table class="matrix"><thead><tr><th scope="col">פלוגה</th>${head}<th scope="col">אישור מג״ד</th></tr></thead><tbody>${rows}</tbody></table></div>`,
     });
   }));

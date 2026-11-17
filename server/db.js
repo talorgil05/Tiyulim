@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createClient } from '@libsql/client';
+import { LEGACY_ROLE_MAP, ROLE_KEYS } from './constants.js';
 
 // Users log in with their full name (unique, like תיאומון). A new registration is "pending" until the
 // מג״ד gives it a permission. phone may be '' only for accounts created before phones were required.
@@ -19,6 +20,20 @@ CREATE TABLE IF NOT EXISTS ${name} (
   deleted_at TEXT,
   CHECK ((kind = 'officer') = (role_key IS NOT NULL)),
   CHECK ((kind = 'company') = (company_key IS NOT NULL))
+);`;
+
+// One signature per round + company + row (item): a second signature on the same row is impossible.
+// item_key is "<area>.<n>" (see constants.js); role_key is the area that signed it.
+const SIGNATURES_TABLE = (name) => `
+CREATE TABLE IF NOT EXISTS ${name} (
+  round_id INTEGER NOT NULL REFERENCES rounds(id),
+  company_key TEXT NOT NULL,
+  item_key TEXT NOT NULL,
+  role_key TEXT NOT NULL,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  signer_name TEXT NOT NULL,
+  signed_at TEXT NOT NULL,
+  PRIMARY KEY (round_id, company_key, item_key)
 );`;
 
 const SCHEMA = `
@@ -45,16 +60,7 @@ CREATE TABLE IF NOT EXISTS rounds (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_open_round ON rounds(status) WHERE status = 'open';
 
--- One signature per round + company + staff role: a second signature is impossible.
-CREATE TABLE IF NOT EXISTS signatures (
-  round_id INTEGER NOT NULL REFERENCES rounds(id),
-  company_key TEXT NOT NULL,
-  role_key TEXT NOT NULL,
-  user_id INTEGER NOT NULL REFERENCES users(id),
-  signer_name TEXT NOT NULL,
-  signed_at TEXT NOT NULL,
-  PRIMARY KEY (round_id, company_key, role_key)
-);
+${SIGNATURES_TABLE('signatures')}
 
 -- The מג״ד's final approval, one per round + company.
 CREATE TABLE IF NOT EXISTS approvals (
@@ -100,6 +106,39 @@ async function migrateUsersV2(db, client) {
     throw e;
   }
 }
+/**
+ * v2 → v3: the 11 staff roles became 21 areas, and every row of an area is its own signature.
+ *  - officers keep their area when it still exists (LEGACY_ROLE_MAP); otherwise they become pending.
+ *  - old whole-role signatures are kept as one row "<area>.legacy" each, so history still shows who signed.
+ */
+async function migrateAreasV3(db, client) {
+  const cols = (await db.all('PRAGMA table_info(signatures)')).map((c) => c.name);
+  if (cols.includes('item_key')) return;
+  console.log('[migration] v3: תחומי אחריות — חתימה לכל שורה');
+  const caseMap = `CASE role_key ${Object.entries(LEGACY_ROLE_MAP).map(([o, n]) => `WHEN '${o}' THEN '${n}'`).join(' ')} ELSE role_key END`;
+  const known = ROLE_KEYS.map((k) => `'${k}'`).join(',');
+  try {
+    await client.executeMultiple(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN;
+      UPDATE users SET role_key = ${caseMap} WHERE kind = 'officer';
+      UPDATE users SET kind = 'pending', role_key = NULL WHERE kind = 'officer' AND role_key NOT IN (${known});
+      DROP TABLE IF EXISTS signatures_new;
+      ${SIGNATURES_TABLE('signatures_new')}
+      INSERT INTO signatures_new (round_id, company_key, item_key, role_key, user_id, signer_name, signed_at)
+        SELECT round_id, company_key, (${caseMap}) || '.legacy', ${caseMap}, user_id, signer_name, signed_at FROM signatures;
+      DROP TABLE signatures;
+      ALTER TABLE signatures_new RENAME TO signatures;
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+  } catch (e) {
+    try { await client.execute('ROLLBACK'); } catch { /* not in a transaction */ }
+    try { await client.execute('PRAGMA foreign_keys = ON'); } catch { /* ignore */ }
+    throw e;
+  }
+}
+
 function runRebuild(client) {
   return client.executeMultiple(`
     PRAGMA foreign_keys = OFF;
@@ -184,6 +223,7 @@ export async function openDb(dbUrl, authToken) {
   db.storage = local ? 'file' : 'turso';
   await db.exec(SCHEMA);
   await migrateUsersV2(db, client);
+  await migrateAreasV3(db, client);
   await db.exec(SCHEMA);   // recreates the triggers that were dropped with the old users table
   return db;
 }
