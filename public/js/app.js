@@ -167,8 +167,7 @@ async function renderLogin(mode = 'login') {
   app.innerHTML = `
     <div class="landing" id="main">
       <img class="landing-logo" src="/icons/logo.png" alt="">
-      <h1>טופס טיולים גדודי</h1>
-      <p class="landing-tag">חתימות קציני מטה לפני יציאה הביתה</p>
+      <h1>טופס טיולים</h1>
       <div class="auth-card">
         <div class="auth-tabs" role="tablist">
           <button type="button" role="tab" class="auth-tab" aria-selected="${!reg}" data-go="login">${ICONS.login}<span>כניסה</span></button>
@@ -231,7 +230,7 @@ async function renderLogin(mode = 'login') {
 // ---------- shell ----------
 function shell(content) {
   const sub = kindText(me);
-  const tabList = me.kind === 'admin' ? [['round', 'סבב נוכחי'], ['users', 'משתמשים'], ['history', 'היסטוריה']]
+  const tabList = me.kind === 'admin' ? [['round', 'השבוע'], ['users', 'משתמשים'], ['history', 'היסטוריה']]
     : me.kind === 'officer' ? [...(me.role_keys || []).map((k) => [`sign-${k}`, `חתימות ${roleLabel(k)}`]), ...(me.can_manage_users ? [['users', 'משתמשים']] : [])]
     : null;
   const tabs = tabList ? `
@@ -245,7 +244,7 @@ function shell(content) {
   app.innerHTML = `
     <div class="shell">
       <header class="topbar">
-        <a class="brand" href="#/round" style="color:inherit;text-decoration:none"><img src="/icons/logo.png" alt=""><span>טופס טיולים גדודי</span></a>
+        <a class="brand" href="#/round" style="color:inherit;text-decoration:none"><img src="/icons/logo.png" alt=""><span>טופס טיולים</span></a>
         <div class="spacer"></div>
         <a class="top-link" href="/help/" aria-label="עזרה">${ICONS.help}<span>עזרה</span></a>
         <a class="who" href="#/profile" title="הפרופיל שלי"><b>${esc(me.full_name)}</b><span>${esc(sub)}</span></a>
@@ -262,21 +261,21 @@ function shell(content) {
   app.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => { location.hash = `#/${b.dataset.tab}`; }));
 }
 
-function roundBar(round, { admin = false } = {}) {
-  if (!round) {
-    return admin
-      ? `<div class="round-bar"><div class="rb-text"><b>עדיין לא נפתח סבב</b><div class="muted small">פתחו סבב כדי שקציני המטה יוכלו לחתום</div></div>
-          <button class="btn btn-primary btn-big" data-open-round>פתיחת סבב חדש</button></div>`
-      : '<div class="notice">○ עדיין לא נפתח סבב. אי אפשר לחתום כרגע</div>';
-  }
+/** "שבוע 47" (or "סבב 3" for forms from before the weekly forms). */
+const weekName = (r) => (r?.week ? `שבוע ${r.week}` : `סבב ${r?.number ?? ''}`);
+const dm = (iso) => { const [, m, d] = iso.split('-'); return `${Number(d)}.${Number(m)}`; };
+const weekDates = (r) => (r?.starts_on ? `${dm(r.starts_on)}–${dm(r.ends_on)}.${r.ends_on.slice(0, 4)}` : '');
+
+/** Header of the weekly form. It opens by itself every Monday at 00:00 and closes when the week ends. */
+function roundBar(round) {
+  if (!round) return '<div class="notice">○ הטופס של השבוע נטען…</div>';
   const open = round.status === 'open';
   const text = open
-    ? `<b>סבב ${round.number} — פתוח</b><div class="muted small">נפתח ${esc(fmtStamp(round.opened_at))} על ידי ${esc(round.opened_by_name)}</div>`
-    : `<b>סבב ${round.number} — נסגר 🔒</b><div class="muted small">נסגר ${esc(fmtStamp(round.closed_at))} על ידי ${esc(round.closed_by_name)}. החתימות נעולות לצפייה</div>`;
-  const action = !admin ? '' : open
-    ? '<button class="btn btn-danger btn-big" data-close-round>סיום סבב</button>'
-    : '<button class="btn btn-primary btn-big" data-open-round>פתיחת סבב חדש</button>';
-  return `<div class="round-bar"><div class="rb-text">${text}</div>${action}</div>`;
+    ? `<b>טופס ${esc(weekName(round))}</b> <span class="muted">· ${esc(weekDates(round))}</span>
+       <div class="muted small">נפתח אוטומטית בכל יום שני ב־00:00 ומתאפס בסוף השבוע</div>`
+    : `<b>${esc(weekName(round))} — נסגר 🔒</b> <span class="muted">${esc(weekDates(round))}</span>
+       <div class="muted small">החתימות נעולות לצפייה</div>`;
+  return `<div class="round-bar"><div class="rb-text">${text}</div></div>`;
 }
 
 function render() {
@@ -350,12 +349,12 @@ function renderOfficer(areaKey) {
     body = `
       <p class="sign-count">${cur.signed_count}/${cur.total} שורות נחתמו</p>
       <ul class="item-list">${rows}</ul>
-      <div class="sign-all">${all}${open ? '' : '<p class="sign-meta">אין סבב פתוח. החתימה תתאפשר כשהמג״ד יפתח סבב</p>'}</div>`;
+      <div class="sign-all">${all}${open ? '' : '<p class="sign-meta">הטופס של השבוע הזה נסגר. טופס חדש ייפתח ביום שני ב־00:00</p>'}</div>`;
   }
   shell(`
     ${round && open ? '' : roundBar(round)}
     <div class="split">
-      <nav class="co-list" aria-label="פלוגות"><h2>פלוגות${round ? ` · סבב ${round.number}` : ''}</h2>${list}</nav>
+      <nav class="co-list" aria-label="פלוגות"><h2>פלוגות${round ? ` · ${esc(weekName(round))}` : ''}</h2>${list}</nav>
       <section class="panel sign-panel" aria-live="polite">
         <h1 class="sign-co">${esc(coName(cur.company))}</h1>
         <p class="sign-role">חותם/ת בתור: <b>${esc(area.label)}</b></p>
@@ -368,7 +367,11 @@ function renderOfficer(areaKey) {
   }));
   const sign = async (btn, extra, okText) => {
     btn.disabled = true;
-    try { await api.post('/api/sign', { company: cur.company, ...extra }); toast(okText, 'ok'); offerInstallBar(); }
+    try {
+      const r = await api.post('/api/sign', { company: cur.company, ...extra });
+      showUndo(cur.company, r.items, r.undo_seconds || 10, okText);
+      offerInstallBar();
+    }
     catch (ex) { toast(ex.message, 'error'); }
     await refresh();
   };
@@ -382,7 +385,7 @@ const FINAL_TEXT = {
   awaiting_approval: 'כל קציני המטה חתמו — ממתינים לאישור מג״ד',
   approved: 'הטופס אושר על ידי המג״ד',
 };
-function formView(f, { openRound = false } = {}) {
+function formView(f, { openRound = false, round = null } = {}) {
   const areas = f.areas.map((a) => {
     const st = a.legacy && !a.signed_count
       ? `${yes('נחתם')} <span class="role-by">${esc(a.legacy.signer_name)} · ${esc(fmtStamp(a.legacy.signed_at))} (גרסה קודמת)</span>`
@@ -399,7 +402,14 @@ function formView(f, { openRound = false } = {}) {
   const markFinal = f.status === 'approved' ? '<span class="mark yes" aria-hidden="true">✓</span>'
     : '<span class="mark wait" aria-hidden="true">…</span>';
   return `
+    <div class="print-head">
+      <img src="/icons/logo.png" alt="">
+      <div><b>טופס טיולים — ${esc(coName(f.company))}</b>
+        <span>${round ? `${esc(weekName(round))}${round.starts_on ? ` · ${esc(weekDates(round))}` : ''}` : ''}</span>
+        <span>הודפס: ${esc(fmtStamp(new Date().toISOString()))}</span></div>
+    </div>
     <div class="form-head"><h1>${esc(coName(f.company))}</h1>
+      <button type="button" class="btn btn-sm no-print" data-print>🖨 הדפסה / PDF</button>
       <span class="count">${f.areas_done}/${f.areas_total} תחומים · ${f.signed_count}/${f.total} שורות</span></div>
     <p class="small muted" style="margin-top:-.4rem">לחיצה על תחום מציגה את השורות שלו, מי חתם ומתי.</p>
     <div class="areas">${areas}</div>
@@ -407,9 +417,22 @@ function formView(f, { openRound = false } = {}) {
       ${f.approval ? `<small>אושר על ידי ${esc(f.approval.approver_name)} · ${esc(fmtStamp(f.approval.approved_at))}</small>` : ''}</div></div>`;
 }
 
+/** Print the form (the browser's print window also offers "Save as PDF"). Every area is opened first. */
+function printForm() {
+  const areas = [...document.querySelectorAll('details.area')];
+  const wasOpen = areas.map((d) => d.open);
+  areas.forEach((d) => { d.open = true; });
+  const restore = () => { areas.forEach((d, i) => { if (d.isConnected) d.open = wasOpen[i]; }); window.removeEventListener('afterprint', restore); };
+  window.addEventListener('afterprint', restore);
+  window.print();
+}
+// Ctrl+P from the browser menu: open every area too
+window.addEventListener('beforeprint', () => document.querySelectorAll('details.area').forEach((d) => { d.open = true; }));
+document.addEventListener('click', (e) => { if (e.target.closest('[data-print]')) printForm(); });
+
 function renderCompany() {
   const { round, form } = state;
-  shell(`${roundBar(round)}<section class="panel">${round ? formView(form, { openRound: round.status === 'open' }) : `<div class="form-head"><h1>${esc(coName(me.company_key))}</h1></div><p class="muted">הטופס יופיע כשהמג״ד יפתח סבב.</p>`}</section>`);
+  shell(`${roundBar(round)}<section class="panel">${round ? formView(form, { openRound: round.status === 'open', round }) : `<div class="form-head"><h1>${esc(coName(me.company_key))}</h1></div><p class="muted">הטופס של השבוע נטען…</p>`}</section>`);
 }
 
 // ---------- מג״ד ----------
@@ -433,14 +456,14 @@ function renderAdmin() {
     const ready = f.status === 'awaiting_approval';
     approve = `<div class="approve-box">
       <button class="btn-sign" data-approve ${ready && open ? '' : 'disabled'}>אישור סופי לטופס</button>
-      <span class="muted small">${!open ? 'הסבב נסגר — אין אפשרות לאשר' : ready ? 'כל השורות נחתמו' : `${f.total - f.signed_count === 1 ? 'חסרה שורה אחת' : `חסרות ${f.total - f.signed_count} שורות`} — האישור ייפתח כשכל השורות ייחתמו`}</span>
+      <span class="muted small">${!open ? 'השבוע נגמר — אין אפשרות לאשר' : ready ? 'כל השורות נחתמו' : `${f.total - f.signed_count === 1 ? 'חסרה שורה אחת' : `חסרות ${f.total - f.signed_count} שורות`} — האישור ייפתח כשכל השורות ייחתמו`}</span>
     </div>`;
   }
   shell(`
-    ${roundBar(round, { admin: true })}
+    ${roundBar(round)}
     ${round ? `<div class="split">
       <nav class="co-list" aria-label="פלוגות"><h2>פלוגות · ${forms.filter((x) => x.status === 'approved').length}/${forms.length} אושרו</h2>${list}</nav>
-      <section class="panel">${formView(f, { openRound: open })}${approve}</section>
+      <section class="panel">${formView(f, { openRound: open, round })}${approve}</section>
     </div>` : ''}`);
   app.querySelectorAll('[data-co]').forEach((b) => b.addEventListener('click', () => {
     selected = b.dataset.co; renderAdmin();
@@ -452,16 +475,32 @@ function renderAdmin() {
     catch (ex) { toast(ex.message, 'error'); }
     await refresh();
   });
-  app.querySelector('[data-open-round]')?.addEventListener('click', async () => {
-    if (!(await confirmSheet({ title: 'פתיחת סבב חדש', text: 'כל הפלוגות יתחילו ללא חתימות וללא אישור. הסבבים הקודמים נשמרים בהיסטוריה.', confirmLabel: 'פתיחת סבב' }))) return;
-    try { await api.post('/api/rounds/open'); toast('נפתח סבב חדש', 'ok'); } catch (ex) { toast(ex.message, 'error'); }
-    selected = null; await refresh();
-  });
-  app.querySelector('[data-close-round]')?.addEventListener('click', async () => {
-    const approved = forms.filter((x) => x.status === 'approved').length;
-    if (!(await confirmSheet({ title: 'סיום סבב', text: `${approved} מתוך ${forms.length} פלוגות אושרו. לאחר הסיום לא יהיה אפשר לחתום או לאשר בסבב הזה, והוא יישמר לצפייה בהיסטוריה.`, confirmLabel: 'סיום סבב' }))) return;
-    try { await api.post('/api/rounds/close'); toast('הסבב נסגר', 'ok'); } catch (ex) { toast(ex.message, 'error'); }
-    await refresh();
-  });
 }
 
+
+// ---------- undo a signature (10 seconds) ----------
+let undoBar = null;
+function showUndo(company, items, seconds, okText) {
+  undoBar?.close();
+  if (!items?.length) return toast(okText, 'ok');
+  const el = document.createElement('div');
+  el.className = 'undo-bar';
+  el.setAttribute('role', 'status');
+  el.innerHTML = `<span>${esc(okText)}</span>
+    <button type="button" class="undo-btn">ביטול <b class="undo-n">${seconds}</b></button>
+    <i class="undo-timer" style="animation-duration:${seconds}s"></i>`;
+  document.body.append(el);
+  let left = seconds;
+  const tick = setInterval(() => { left -= 1; const n = el.querySelector('.undo-n'); if (n) n.textContent = left; if (left <= 0) close(); }, 1000);
+  function close() { clearInterval(tick); el.classList.add('out'); setTimeout(() => el.remove(), 250); if (undoBar?.el === el) undoBar = null; }
+  el.querySelector('.undo-btn').addEventListener('click', async (e) => {
+    e.currentTarget.disabled = true;
+    try {
+      const r = await api.post('/api/sign/undo', { company, items });
+      toast(r.removed === 1 ? 'החתימה בוטלה' : `${r.removed} חתימות בוטלו`, 'ok');
+    } catch (ex) { toast(ex.message, 'error'); }
+    close();
+    await refresh();
+  });
+  undoBar = { el, close };
+}

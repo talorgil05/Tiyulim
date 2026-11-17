@@ -80,7 +80,7 @@ export async function renderUsers(ctx) {
         <fieldset class="perm-pick"><legend class="sr-only">בחירת הרשאה</legend>
           ${opt('officer', 'קצין מטה', 'חותם לפלוגות בשם התחום — אפשר לסמן כמה תחומים', `<div class="area-pick" id="p-roles">${meta.roles.map((r) => `<label class="area-chk"><input type="checkbox" value="${esc(r.key)}" ${(u.role_keys || []).includes(r.key) ? 'checked' : ''}><span>${esc(r.label)}</span></label>`).join('')}</div>`)}
           ${opt('company', 'משתמש פלוגתי', 'צופה בטופס של הפלוגה שלו בלבד', sel('p-co', meta.companies.map((c) => [c, coName(c)]), u.company_key, 'בחרו פלוגה…'))}
-          ${isAdmin ? opt('admin', 'מג״ד', 'כל ההרשאות: סבבים, אישור סופי, משתמשים') : ''}
+          ${isAdmin ? opt('admin', 'מג״ד', 'כל ההרשאות: אישור סופי, היסטוריה, משתמשים') : ''}
           ${opt('pending', 'ללא הרשאה', 'ממתין לשיוך — לא רואה ולא חותם')}
         </fieldset></form>`,
       foot: '<button type="button" class="btn" data-close>ביטול</button><button type="submit" form="perm-form" class="btn btn-primary">שמירה</button>',
@@ -115,7 +115,7 @@ export async function renderUsers(ctx) {
         <div class="danger-note">הפעולה סופית ואי אפשר לבטל אותה.</div>
         <ul style="margin:0 0 .8rem;padding-inline-start:1.2rem">
           <li>השם, הטלפון והסיסמה יימחקו, והמשתמש לא יוכל להתחבר.</li>
-          <li>חתימות ואישורים מסבבים קודמים נשמרים עם השם שלו.</li>
+          <li>חתימות ואישורים משבועות קודמים נשמרים עם השם שלו.</li>
           <li>השם יתפנה — אפשר יהיה להירשם בו מחדש.</li>
         </ul>
         <div class="field"><label for="del-name">כדי לאשר, הקלידו את השם המלא: <b>${esc(u.full_name)}</b></label>
@@ -163,16 +163,21 @@ export async function renderUsers(ctx) {
 // =====================================================================
 // History (מג״ד)
 // =====================================================================
+const dmy = (iso) => { const [y, m, d] = iso.split('-'); return `${Number(d)}.${Number(m)}.${y}`; };
+/** "שבוע 47 (2026)", or "סבב 3" for forms from before the weekly forms. */
+export const weekTitle = (r) => (r.week ? `שבוע ${r.week} (${r.year})` : `סבב ${r.number}`);
+export const weekRange = (r) => `${dmy(r.starts_on)} – ${dmy(r.ends_on)}`;
+
 export async function renderHistory(ctx) {
   const { rounds } = await api.get('/api/rounds');
   ctx.shell(`
-    <h2>סבבים קודמים</h2>
+    <h2>טפסים לפי שבוע</h2>
     ${rounds.length ? rounds.map((r) => `
       <button class="hist-row" data-round="${r.id}">
-        <span class="h-main"><b>סבב ${r.number}</b> ${r.status === 'open' ? '<span class="tag">פתוח</span>' : '<span class="tag">🔒 נסגר</span>'}
-          <span class="muted small" style="display:block">${esc(fmtStamp(r.opened_at))}${r.closed_at ? ` עד ${esc(fmtStamp(r.closed_at))}` : ''}</span></span>
+        <span class="h-main"><b>${esc(weekTitle(r))}</b> ${r.status === 'open' ? '<span class="tag">השבוע</span>' : '<span class="tag">🔒 נסגר</span>'}
+          <span class="muted small" style="display:block">${r.starts_on ? esc(weekRange(r)) : `${esc(fmtStamp(r.opened_at))}${r.closed_at ? ` עד ${esc(fmtStamp(r.closed_at))}` : ''}`}</span></span>
         <span class="count">${r.approved}/${r.total} אושרו</span>
-      </button>`).join('') : '<p class="muted">אין עדיין סבבים.</p>'}`);
+      </button>`).join('') : '<p class="muted">אין עדיין טפסים.</p>'}`);
   document.querySelectorAll('[data-round]').forEach((b) => b.addEventListener('click', async () => {
     const { round, forms } = await api.get(`/api/rounds/${b.dataset.round}`);
     // companies × areas: ✓ = every row signed, n/m = partly, ○ = nothing, — = area not relevant
@@ -187,7 +192,7 @@ export async function renderHistory(ctx) {
       ${ctx.meta.roles.map((r) => cell(f.areas.find((a) => a.key === r.key))).join('')}
       <td>${f.approval ? `✓ ${esc(f.approval.approver_name)}<div class="muted small">${esc(fmtStamp(f.approval.approved_at))}</div>` : '○ לא אושר'}</td></tr>`).join('');
     openSheet({
-      wide: true, title: `סבב ${round.number}${round.status === 'closed' ? ' — נעול לצפייה' : ''}`,
+      wide: true, title: `${weekTitle(round)}${round.starts_on ? ` · ${weekRange(round)}` : ''}${round.status === 'closed' ? ' — נעול לצפייה' : ''}`,
       body: `<p class="muted small">✓ = כל השורות נחתמו · 2/4 = חלק · ○ = טרם נחתם · — = לא רלוונטי לפלוגה. במחשב, ריחוף על תא מציג מי חתם ומתי.</p>
         <div class="matrix-wrap"><table class="matrix"><thead><tr><th scope="col">פלוגה</th>${head}<th scope="col">אישור מג״ד</th></tr></thead><tbody>${rows}</tbody></table></div>`,
     });

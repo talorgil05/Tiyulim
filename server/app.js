@@ -7,12 +7,15 @@ import { openDb } from './db.js';
 import { hashPassword, verifyPassword, dummyVerify, newToken, tokenHash, randomPassword, AttemptLimiter } from './auth.js';
 import { ROLES, ROLE_KEYS, ROLE_LABEL, COMPANIES, KINDS, KIND_LABEL, ITEM, rolesFor, roleApplies, canManageUsers, roleKeysOf } from './constants.js';
 import { normalizeName, isValidName, NAME_TAKEN_MSG } from './names.js';
+import { currentWeek } from './week.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const SESSION_DAYS = 30;
 const COOKIE = 'ty_session';
 const CSRF_HEADER = 'tiyulim';
+const UNDO_SECONDS = 10;   // the undo button after signing shows this long
+const UNDO_GRACE = 5;      // extra seconds the server allows, for a slow network
 
 class HttpError extends Error {
   constructor(status, message, code) { super(message); this.status = status; this.code = code; }
@@ -134,12 +137,35 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
   }
 
   // ---------- round data ----------
+  /**
+   * The form of the current calendar week (Monday 00:00 → Sunday 23:59, Israel time). It is created the first
+   * time anyone needs it after the week starts; the previous week's form is closed at the same moment and stays
+   * in history, read-only. Nobody opens or closes forms by hand.
+   */
+  async function ensureCurrentRound() {
+    const wk = currentWeek(clock());
+    const have = await db.get('SELECT * FROM rounds WHERE iso_year = ? AND iso_week = ?', wk.year, wk.week);
+    if (have && have.status === 'open') return have;
+    if (have) return have;   // (a week is never reopened)
+    try {
+      await db.tx(async (t) => {
+        await t.run(`UPDATE rounds SET status = 'closed', closed_at = ?, closed_by_name = 'סיום שבוע אוטומטי' WHERE status = 'open'`, nowIso());
+        const n = ((await t.get('SELECT MAX(number) AS n FROM rounds')).n || 0) + 1;
+        await t.run(`INSERT INTO rounds (number, status, opened_at, opened_by_name, iso_year, iso_week, starts_on, ends_on)
+          VALUES (?, 'open', ?, 'אוטומטי', ?, ?, ?, ?)`, n, nowIso(), wk.year, wk.week, wk.starts_on, wk.ends_on);
+      });
+    } catch (e) {
+      if (!String(e.message).includes('UNIQUE')) throw e;   // another request created it at the same moment
+    }
+    return db.get('SELECT * FROM rounds WHERE iso_year = ? AND iso_week = ?', wk.year, wk.week);
+  }
+  /** The open form (always the current week's), inside a transaction. */
   const openRound = (h = db) => h.get(`SELECT * FROM rounds WHERE status = 'open'`);
-  /** The round everyone sees: the open one, otherwise the last closed one (read-only). */
-  const shownRound = async () => (await openRound()) || db.get('SELECT * FROM rounds ORDER BY number DESC LIMIT 1');
+  const shownRound = () => ensureCurrentRound();
   const roundView = (r) => r && ({
     id: r.id, number: r.number, status: r.status, opened_at: r.opened_at, opened_by_name: r.opened_by_name,
     closed_at: r.closed_at, closed_by_name: r.closed_by_name,
+    week: r.iso_week ?? null, year: r.iso_year ?? null, starts_on: r.starts_on ?? null, ends_on: r.ends_on ?? null,
   });
 
   /**
@@ -328,44 +354,54 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
     if (!mine.includes(role)) throw new HttpError(403, 'אפשר לחתום רק על השורות של התחומים שלך', 'wrong_role');
     if (!roleApplies(role, c)) throw conflict('התחום הזה לא רלוונטי לפלוגה הזו', 'not_relevant');
     const keys = body.item !== undefined ? [body.item] : ROLES.find((r) => r.key === role).items.map((it) => it.key);
-    let added = 0;
+    const signedKeys = [];
+    await ensureCurrentRound();
     await db.tx(async (t) => {
       const r = await openRound(t);
-      if (!r) throw conflict('אין סבב פתוח. אי אפשר לחתום כרגע', 'no_round');
+      if (!r) throw conflict('הטופס של השבוע עוד לא נפתח. נסו שוב בעוד רגע', 'no_round');
       const at = nowIso();
       for (const k of keys) {
-        added += (await t.run(`INSERT OR IGNORE INTO signatures (round_id, company_key, item_key, role_key, user_id, signer_name, signed_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`, r.id, c, k, role, user.id, user.full_name, at)).changes;
+        const res = await t.run(`INSERT OR IGNORE INTO signatures (round_id, company_key, item_key, role_key, user_id, signer_name, signed_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`, r.id, c, k, role, user.id, user.full_name, at);
+        if (res.changes) signedKeys.push(k);
       }
-      if (!added) throw conflict(keys.length === 1 ? 'השורה הזו כבר נחתמה בסבב הנוכחי' : 'כל השורות שלך לפלוגה זו כבר נחתמו', 'already_signed');
+      if (!signedKeys.length) throw conflict(keys.length === 1 ? 'השורה הזו כבר נחתמה השבוע' : 'כל השורות שלך לפלוגה זו כבר נחתמו', 'already_signed');
     });
     await changed();
-    return { ok: true, signed: added };
+    return { ok: true, signed: signedKeys.length, items: signedKeys, undo_seconds: UNDO_SECONDS };
   });
 
-  // --- מג״ד: rounds and final approval ---
-  route('POST', '/api/rounds/open', ADMIN, async ({ user }) => {
-    await db.tx(async (t) => {
-      if (await openRound(t)) throw conflict('כבר יש סבב פתוח. יש לסיים אותו לפני פתיחת סבב חדש', 'round_open');
-      const n = ((await t.get('SELECT MAX(number) AS n FROM rounds')).n || 0) + 1;
-      await t.run(`INSERT INTO rounds (number, status, opened_at, opened_by, opened_by_name) VALUES (?, 'open', ?, ?, ?)`, n, nowIso(), user.id, user.full_name);
-    });
-    await changed();
-    return { round: roundView(await openRound()) };
-  });
-
-  route('POST', '/api/rounds/close', ADMIN, async ({ user }) => {
+  /**
+   * Undo: an officer may take back what he signed in the last few seconds (the button shows for 10 s; the
+   * server allows a small margin for a slow network). Only his own signatures, only this week's form, and
+   * never after the מג״ד already approved that company's form.
+   */
+  route('POST', '/api/sign/undo', ['officer'], async ({ user, body }) => {
+    const c = companyKey(body.company);
+    const items = Array.isArray(body.items) ? body.items.filter((k) => ITEM[k]) : [];
+    if (!items.length) throw bad('אין מה לבטל', 'items');
+    const since = new Date(clock().getTime() - (UNDO_SECONDS + UNDO_GRACE) * 1000).toISOString();
+    let removed = 0;
     await db.tx(async (t) => {
       const r = await openRound(t);
-      if (!r) throw conflict('אין סבב פתוח', 'no_round');
-      await t.run(`UPDATE rounds SET status = 'closed', closed_at = ?, closed_by = ?, closed_by_name = ? WHERE id = ?`, nowIso(), user.id, user.full_name, r.id);
+      if (!r) throw conflict('אי אפשר לבטל: הטופס של השבוע הזה כבר נסגר', 'no_round');
+      if (await t.get('SELECT 1 AS x FROM approvals WHERE round_id = ? AND company_key = ?', r.id, c)) {
+        throw conflict('אי אפשר לבטל: המג״ד כבר אישר את הטופס של הפלוגה', 'already_approved');
+      }
+      for (const k of items) {
+        removed += (await t.run(`DELETE FROM signatures WHERE round_id = ? AND company_key = ? AND item_key = ? AND user_id = ? AND signed_at >= ?`,
+          r.id, c, k, user.id, since)).changes;
+      }
+      if (!removed) throw conflict('עבר הזמן לביטול החתימה', 'undo_expired');
     });
     await changed();
-    return { ok: true };
+    return { ok: true, removed };
   });
 
+  // --- מג״ד: final approval (the weekly forms open and close by themselves) ---
   route('POST', '/api/approve', ADMIN, async ({ user, body }) => {
     const c = companyKey(body.company);
+    await ensureCurrentRound();
     await db.tx(async (t) => {
       const r = await openRound(t);
       if (!r) throw conflict('אין סבב פתוח', 'no_round');
@@ -382,6 +418,7 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
   });
 
   route('GET', '/api/rounds', ADMIN, async () => {
+    await ensureCurrentRound();
     const rows = await db.all('SELECT * FROM rounds ORDER BY number DESC');
     const counts = await db.all('SELECT round_id, COUNT(*) AS n FROM approvals GROUP BY round_id');
     return { rounds: rows.map((r) => ({ ...roundView(r), approved: counts.find((c) => c.round_id === r.id)?.n || 0, total: COMPANIES.length })) };

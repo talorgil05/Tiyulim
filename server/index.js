@@ -25,7 +25,7 @@ const { server, db } = await createApp({
 });
 
 server.listen(PORT, HOST, async () => {
-  console.log(`טופס טיולים גדודי פועל: http://localhost:${PORT}`);
+  console.log(`טופס טיולים פועל: http://localhost:${PORT}`);
   console.log(`מסד נתונים: ${process.env.TURSO_DATABASE_URL ? 'Turso' : DB_URL}`);
   const done = await db.get(`SELECT 1 AS x FROM app_settings WHERE key = 'setup_completed_at'`);
   if (!done) {

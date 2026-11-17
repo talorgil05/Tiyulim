@@ -9,10 +9,13 @@ import { ROLES, COMPANIES, rolesFor } from '../server/constants.js';
 
 const SETUP = 'setup-code-123456';
 let server, db, base, dir;
+let now = new Date('2026-11-17T10:00:00Z');
+const at = (iso) => { now = new Date(iso); };
+const later = (sec) => { now = new Date(now.getTime() + sec * 1000); };
 
 before(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiyulim-'));
-  ({ server, db } = await createApp({ dbUrl: path.join(dir, 't.db'), setupCode: SETUP, log: { error() {} } }));
+  ({ server, db } = await createApp({ dbUrl: path.join(dir, 't.db'), setupCode: SETUP, clock: () => now, log: { error() {} } }));
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -139,7 +142,7 @@ test('תקשוב assigns every permission except מג״ד', async () => {
   assert.equal((await k.post(`/api/users/${id}/delete`, { confirm_name: 'חייל חדש' })).status, 200);
   assert.equal((await users()).some((u) => u.id === id), false);
   // and nothing else of the מג״ד's
-  assert.equal((await k.post('/api/rounds/open')).status, 403);
+  assert.equal((await k.post('/api/approve', { company: 'א' })).status, 403);
   assert.equal((await k.get('/api/rounds')).status, 403);
 });
 
@@ -161,23 +164,20 @@ test('the מג״ד can give מג״ד to anyone; the last מג״ד is protected',
   assert.equal((await dani.get('/api/users')).status, 403);
 });
 
-test('no signing before the first round is opened', async () => {
-  const r = await officers.rechev.post('/api/sign', { company: 'א' });
-  assert.equal(r.status, 409);
-  assert.equal(r.data.code, 'no_round');
+test('the form of the current calendar week opens by itself', async () => {
+  const st = (await admin.get('/api/state')).data;
+  assert.equal(st.round.status, 'open');
+  assert.equal(st.round.week, 47);
+  assert.equal(st.round.year, 2026);
+  assert.equal(st.round.starts_on, '2026-11-16');   // Monday
+  assert.equal(st.round.ends_on, '2026-11-22');     // Sunday
+  // nobody opens or closes forms by hand any more
+  assert.equal((await admin.post('/api/rounds/open')).status, 404);
+  assert.equal((await admin.post('/api/rounds/close')).status, 404);
 });
 
 test('CSRF header is required on writes', async () => {
-  assert.equal((await admin.post('/api/rounds/open', {}, { csrf: false })).status, 403);
-});
-
-test('only the מג״ד opens a round', async () => {
-  assert.equal((await officers.rechev.post('/api/rounds/open')).status, 403);
-  assert.equal((await companies['א'].post('/api/rounds/open')).status, 403);
-  const r = await admin.post('/api/rounds/open');
-  assert.equal(r.status, 200);
-  assert.equal(r.data.round.number, 1);
-  assert.equal((await admin.post('/api/rounds/open')).status, 409);   // already open
+  assert.equal((await admin.post('/api/approve', { company: 'א' }, { csrf: false })).status, 403);
 });
 
 test('officer signs row by row, or all his rows at once — only in the name of his own area', async () => {
@@ -307,23 +307,35 @@ test('all rows signed → waiting for the מג״ד (no automatic approval) → �
   assert.equal((await admin.get('/api/state')).data.forms.find((f) => f.company === 'ב').status, 'awaiting_signatures');
 });
 
-test('closing the round locks it', async () => {
-  assert.equal((await officers.lag.post('/api/rounds/close')).status, 403);
-  assert.equal((await admin.post('/api/rounds/close')).status, 200);
-  const s = await officers.lag.post('/api/sign', { company: 'ב' });
-  assert.equal(s.status, 409);
-  assert.equal(s.data.code, 'no_round');
-  assert.equal((await admin.post('/api/approve', { company: 'ב' })).status, 409);
-  const st = (await companies['א'].get('/api/state')).data;
-  assert.equal(st.round.status, 'closed');
-  assert.equal(st.form.status, 'approved');
+test('undo: own signature, within 10 seconds, not after the מג״ד approved', async () => {
+  const first = await officers.lag.post('/api/sign', { company: 'ב' });
+  assert.equal(first.status, 200);
+  assert.deepEqual(first.data.items, ['lag.1']);
+  assert.equal(first.data.undo_seconds, 10);
+  // someone else can't undo it
+  assert.equal((await officers.rechev.post('/api/sign/undo', { company: 'ב', items: ['lag.1'] })).data.code, 'undo_expired');
+  later(8);
+  const u = await officers.lag.post('/api/sign/undo', { company: 'ב', items: ['lag.1'] });
+  assert.equal(u.status, 200);
+  assert.equal(u.data.removed, 1);
+  const b = (await admin.get('/api/state')).data.forms.find((x) => x.company === 'ב');
+  assert.equal(b.areas.find((a) => a.key === 'lag').signed_count, 0);
+  // too late
+  assert.equal((await officers.lag.post('/api/sign', { company: 'ב' })).status, 200);
+  later(20);
+  assert.equal((await officers.lag.post('/api/sign/undo', { company: 'ב', items: ['lag.1'] })).data.code, 'undo_expired');
+  // after approval: no undo (א was approved above; sign a fresh row there is impossible, so check the rule directly)
+  assert.equal((await officers.rechev.post('/api/sign/undo', { company: 'א', items: ['rechev.1'] })).data.code, 'already_approved');
+  assert.equal((await companies['ב'].post('/api/sign/undo', { company: 'ב', items: ['lag.1'] })).status, 403);
 });
 
-test('a new round starts clean; the previous one stays in history', async () => {
-  const r = await admin.post('/api/rounds/open');
-  assert.equal(r.data.round.number, 2);
+test('Monday 00:00 (Israel) starts a new clean week; last week is closed and kept', async () => {
+  at('2026-11-22T21:59:00Z');   // Sunday 23:59 in Israel: still week 47
+  assert.equal((await admin.get('/api/state')).data.round.week, 47);
+  at('2026-11-22T22:00:00Z');   // Monday 00:00 in Israel
   const st = (await admin.get('/api/state')).data;
-  assert.equal(st.round.number, 2);
+  assert.equal(st.round.week, 48);
+  assert.equal(st.round.status, 'open');
   for (const f of st.forms) {
     assert.equal(f.signed_count, 0, f.company);
     assert.equal(f.approval, null);
@@ -333,11 +345,13 @@ test('a new round starts clean; the previous one stays in history', async () => 
   assert.equal((await officers.rechev.post('/api/sign', { company: 'א' })).status, 200);
 
   const hist = (await admin.get('/api/rounds')).data.rounds;
-  assert.deepEqual(hist.map((h) => [h.number, h.status, h.approved]), [[2, 'open', 0], [1, 'closed', 1]]);
+  assert.deepEqual(hist.map((h) => [h.week, h.status, h.approved]), [[48, 'open', 0], [47, 'closed', 1]]);
   const old = (await admin.get(`/api/rounds/${hist[1].id}`)).data;
-  const a = old.forms.find((f) => f.company === 'א');
+  const a = old.forms.find((x) => x.company === 'א');
   assert.equal(a.signed_count, a.total);
   assert.equal(a.approval.approver_name, 'סא״ל ישראל');
+  // last week's form is locked: undo / approve go to the new week only
+  assert.equal((await admin.post('/api/approve', { company: 'ב' })).data.code, 'missing_signatures');
 });
 
 test('profile: name and phone; password change logs out other sessions', async () => {

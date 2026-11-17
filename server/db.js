@@ -146,6 +146,26 @@ async function migrateAreasV3(db, client) {
   }
 }
 
+/**
+ * v4: the form is per calendar week, opened automatically (Monday 00:00 Israel) — no manual open/close.
+ * A round now carries its ISO year/week and dates. Rounds that were opened by hand stay in history, closed.
+ */
+async function migrateWeeksV4(db) {
+  const cols = (await db.all('PRAGMA table_info(rounds)')).map((c) => c.name);
+  if (!cols.includes('iso_week')) {
+    console.log('[migration] v4: טופס לפי שבוע קלנדרי');
+    await db.exec(`
+      ALTER TABLE rounds ADD COLUMN iso_year INTEGER;
+      ALTER TABLE rounds ADD COLUMN iso_week INTEGER;
+      ALTER TABLE rounds ADD COLUMN starts_on TEXT;
+      ALTER TABLE rounds ADD COLUMN ends_on TEXT;
+    `);
+    await db.run(`UPDATE rounds SET status = 'closed', closed_at = ?, closed_by_name = 'מעבר לטופס שבועי'
+      WHERE status = 'open'`, new Date().toISOString());
+  }
+  await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS one_round_per_week ON rounds(iso_year, iso_week) WHERE iso_week IS NOT NULL;');
+}
+
 function runRebuild(client) {
   return client.executeMultiple(`
     PRAGMA foreign_keys = OFF;
@@ -232,6 +252,7 @@ export async function openDb(dbUrl, authToken) {
   await migrateUsersV2(db, client);
   await migrateAreasV3(db, client);
   await db.exec(SCHEMA);   // recreates the triggers that were dropped with the old users table
+  await migrateWeeksV4(db);
   // every officer's main area is also in user_roles (accounts from before several areas existed)
   await db.run(`INSERT OR IGNORE INTO user_roles (user_id, role_key)
     SELECT id, role_key FROM users WHERE kind = 'officer' AND role_key IS NOT NULL`);

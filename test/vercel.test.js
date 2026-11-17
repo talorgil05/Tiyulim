@@ -49,7 +49,8 @@ test('Vercel entry: register, log in, sign and see the change counter move', asy
   assert.equal(reg.status, 200, JSON.stringify(reg.data));
   assert.equal(reg.data.user.kind, 'admin');
   const v0 = (await call('GET', '/api/version')).data.version;
-  assert.equal((await call('POST', '/api/rounds/open')).status, 200);
+  // any change (here: a new registration) moves the counter
+  await fetch(base + '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'tiyulim' }, body: JSON.stringify({ full_name: 'משתמש חדש', phone: '0501231235', password: 'password1' }) });
   const v1 = (await call('GET', '/api/version')).data.version;
   assert.ok(v1 > v0, `version should move: ${v0} → ${v1}`);
   assert.equal((await call('GET', '/api/nope')).status, 404);
