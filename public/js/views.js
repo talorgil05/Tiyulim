@@ -173,11 +173,14 @@ export async function renderHistory(ctx) {
   ctx.shell(`
     <h2>טפסים לפי שבוע</h2>
     ${rounds.length ? rounds.map((r) => `
-      <button class="hist-row" data-round="${r.id}">
-        <span class="h-main"><b>${esc(weekTitle(r))}</b> ${r.status === 'open' ? '<span class="tag">השבוע</span>' : '<span class="tag">🔒 נסגר</span>'}
-          <span class="muted small" style="display:block">${r.starts_on ? esc(weekRange(r)) : `${esc(fmtStamp(r.opened_at))}${r.closed_at ? ` עד ${esc(fmtStamp(r.closed_at))}` : ''}`}</span></span>
-        <span class="count">${r.approved}/${r.total} אושרו</span>
-      </button>`).join('') : '<p class="muted">אין עדיין טפסים.</p>'}`);
+      <div class="hist-item">
+        <button class="hist-row" data-round="${r.id}">
+          <span class="h-main"><b>${esc(weekTitle(r))}</b> ${r.status === 'open' ? '<span class="tag">השבוע</span>' : r.reopened ? '<span class="tag pend">פתוח לחתימה מאוחרת</span>' : '<span class="tag">🔒 נסגר</span>'}
+            <span class="muted small" style="display:block">${r.starts_on ? esc(weekRange(r)) : `${esc(fmtStamp(r.opened_at))}${r.closed_at ? ` עד ${esc(fmtStamp(r.closed_at))}` : ''}`}</span></span>
+          <span class="count">${r.approved}/${r.total} אושרו</span>
+        </button>
+        ${r.status === 'open' ? '' : `<a class="btn btn-sm hist-edit" href="#/edit-${r.id}">✏️ עריכה</a>`}
+      </div>`).join('') : '<p class="muted">אין עדיין טפסים.</p>'}`);
   document.querySelectorAll('[data-round]').forEach((b) => b.addEventListener('click', async () => {
     const { round, forms } = await api.get(`/api/rounds/${b.dataset.round}`);
     // companies × areas: ✓ = every row signed, n/m = partly, ○ = nothing, — = area not relevant

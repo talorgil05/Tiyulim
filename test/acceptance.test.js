@@ -354,6 +354,55 @@ test('Monday 00:00 (Israel) starts a new clean week; last week is closed and kep
   assert.equal((await admin.post('/api/approve', { company: 'ב' })).data.code, 'missing_signatures');
 });
 
+test('editing a past week: the מג״ד marks missing rows, reopens it for officers, approves or cancels', async () => {
+  const w47 = (await admin.get('/api/rounds')).data.rounds.find((r) => r.week === 47);
+  const sheetB = async () => (await admin.get(`/api/rounds/${w47.id}`)).data.forms.find((f) => f.company === 'ב');
+  // locked: officers can't sign in it
+  assert.equal((await officers.rechev.post('/api/sign', { company: 'ב', round_id: w47.id })).data.code, 'week_locked');
+  // only the מג״ד edits
+  assert.equal((await officers.tikshuv.post(`/api/rounds/${w47.id}/mark`, { company: 'ב', item: 'rechev.1' })).status, 403);
+  assert.equal((await officers.tikshuv.post(`/api/rounds/${w47.id}/reopen`, { open: true })).status, 403);
+  // mark a missing row
+  assert.equal((await admin.post(`/api/rounds/${w47.id}/mark`, { company: 'ב', item: 'rechev.1' })).status, 200);
+  let row = (await sheetB()).areas.find((a) => a.key === 'rechev').items[0];
+  assert.equal(row.signed, true);
+  assert.equal(row.by_admin, true);
+  assert.equal(row.signer_name, 'סא״ל ישראל');
+  assert.equal((await admin.post(`/api/rounds/${w47.id}/mark`, { company: 'ב', item: 'rechev.1' })).data.code, 'already_signed');
+  assert.equal((await admin.post(`/api/rounds/${w47.id}/mark`, { company: 'א', item: 'kambatz_hachsham.1' })).data.code, 'not_relevant');
+  // he can take back his own mark, never an officer's signature (קל״ג signed ב in week 47)
+  assert.equal((await admin.post(`/api/rounds/${w47.id}/unmark`, { company: 'ב', item: 'lag.1' })).data.code, 'officer_signature');
+  assert.equal((await admin.post(`/api/rounds/${w47.id}/unmark`, { company: 'ב', item: 'rechev.1' })).status, 200);
+  assert.equal((await sheetB()).areas.find((a) => a.key === 'rechev').items[0].signed, false);
+
+  // reopen for officers: the week shows up for them and they can sign in it
+  assert.equal((await admin.post(`/api/rounds/${w47.id}/reopen`, { open: true })).data.round.reopened, true);
+  const weeks = (await officers.rechev.get('/api/state')).data.weeks;
+  assert.deepEqual(weeks.map((w) => w.week), [48, 47]);
+  assert.equal((await officers.rechev.post('/api/sign', { company: 'ב', round_id: w47.id })).status, 200);
+  const view = (await officers.rechev.get(`/api/state?round=${w47.id}`)).data;
+  assert.equal(view.round.week, 47);
+  assert.equal(view.areas[0].companies.find((c) => c.company === 'ב').done, true);
+  // and it did not touch this week's form
+  assert.equal((await officers.rechev.get('/api/state')).data.round.week, 48);
+  // lock again
+  assert.equal((await admin.post(`/api/rounds/${w47.id}/reopen`, { open: false })).data.round.reopened, false);
+  assert.equal((await officers.rechev.post('/api/sign', { company: 'ג', round_id: w47.id })).data.code, 'week_locked');
+  assert.deepEqual((await officers.rechev.get('/api/state')).data.weeks.map((w) => w.week), [48]);
+  // this week's form can't be "reopened"
+  const w48 = (await admin.get('/api/rounds')).data.rounds.find((r) => r.week === 48);
+  assert.equal((await admin.post(`/api/rounds/${w48.id}/reopen`, { open: true })).data.code, 'current_week');
+
+  // approval in a past week: cancel and approve again (א was fully signed and approved in week 47)
+  assert.equal((await admin.post('/api/approve/cancel', { company: 'א', round_id: w47.id })).status, 200);
+  assert.equal((await admin.post('/api/approve/cancel', { company: 'א', round_id: w47.id })).data.code, 'not_approved');
+  assert.equal((await admin.post('/api/approve', { company: 'א', round_id: w47.id })).status, 200);
+  assert.equal((await admin.post('/api/approve', { company: 'ב', round_id: w47.id })).data.code, 'missing_signatures');
+  // after approval his own marks are locked until the approval is cancelled
+  assert.equal((await admin.post(`/api/rounds/${w47.id}/mark`, { company: 'ב', item: 'samgad.1' })).status, 200);
+  assert.equal((await officers.tikshuv.post('/api/approve/cancel', { company: 'א', round_id: w47.id })).status, 403);
+});
+
 test('profile: name and phone; password change logs out other sessions', async () => {
   const other = client();
   await other.post('/api/auth/login', { full_name: 'קצין קל״ג', password: PW });

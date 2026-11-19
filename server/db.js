@@ -164,6 +164,13 @@ async function migrateWeeksV4(db) {
       WHERE status = 'open'`, new Date().toISOString());
   }
   await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS one_round_per_week ON rounds(iso_year, iso_week) WHERE iso_week IS NOT NULL;');
+  // v5: the מג״ד can edit past weeks — reopen one for the officers, and mark missing rows himself
+  if (!cols.includes('reopened')) {
+    const has = (await db.all('PRAGMA table_info(rounds)')).map((c) => c.name);
+    if (!has.includes('reopened')) await db.exec('ALTER TABLE rounds ADD COLUMN reopened INTEGER NOT NULL DEFAULT 0;');
+  }
+  const sigCols = (await db.all('PRAGMA table_info(signatures)')).map((c) => c.name);
+  if (!sigCols.includes('by_admin')) await db.exec('ALTER TABLE signatures ADD COLUMN by_admin INTEGER NOT NULL DEFAULT 0;');
 }
 
 function runRebuild(client) {

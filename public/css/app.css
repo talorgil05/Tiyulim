@@ -410,3 +410,15 @@ html[data-theme="dark"] .pdf-overlay { background: rgba(14,21,36,.96); color: #E
 .pdf-overlay div { display: grid; justify-items: center; gap: .8rem; font-size: 1.1rem; }
 .pdf-spin { width: 38px; height: 38px; border-radius: 50%; border: 4px solid rgba(11,37,89,.15); border-top-color: #F57C00; animation: pdf-spin .8s linear infinite; }
 @keyframes pdf-spin { to { transform: rotate(360deg); } }
+
+/* ---------- editing past weeks ---------- */
+.hist-item { display: flex; align-items: stretch; gap: .5rem; margin-bottom: .5rem; }
+.hist-item .hist-row { margin-bottom: 0; flex: 1; }
+.hist-edit { align-self: center; white-space: nowrap; }
+.edit-bar { border: 2px solid var(--orange); }
+.item-row .btn-sm { min-height: 34px; }
+.week-pick { display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: .8rem; }
+.week-tab { min-height: 44px; padding: .4rem .9rem; border-radius: 999px; border: 2px solid var(--navy-line); background: var(--card); color: var(--navy); font: inherit; font-weight: 700; cursor: pointer; }
+.week-tab[aria-selected="true"] { background: var(--navy); border-color: var(--navy); color: var(--on-strong); }
+.week-tab.late { border-color: var(--orange); }
+.week-tab.late[aria-selected="true"] { background: var(--orange-ink); border-color: var(--orange-ink); color: #fff; }

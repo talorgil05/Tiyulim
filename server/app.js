@@ -166,7 +166,25 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
     id: r.id, number: r.number, status: r.status, opened_at: r.opened_at, opened_by_name: r.opened_by_name,
     closed_at: r.closed_at, closed_by_name: r.closed_by_name,
     week: r.iso_week ?? null, year: r.iso_year ?? null, starts_on: r.starts_on ?? null, ends_on: r.ends_on ?? null,
+    reopened: !!r.reopened,
   });
+  /**
+   * The week an officer signs in: this week's form, or a past week the מג״ד reopened for the officers.
+   * roundId omitted = this week.
+   */
+  async function signableRound(t, roundId) {
+    if (roundId === undefined || roundId === null || roundId === '') {
+      const r = await openRound(t);
+      if (!r) throw conflict('הטופס של השבוע עוד לא נפתח. נסו שוב בעוד רגע', 'no_round');
+      return r;
+    }
+    const r = await t.get('SELECT * FROM rounds WHERE id = ?', Number(roundId));
+    if (!r) throw notFound('השבוע לא נמצא');
+    if (r.status !== 'open' && !r.reopened) throw conflict('השבוע הזה נעול. רק המג״ד יכול לפתוח אותו מחדש', 'week_locked');
+    return r;
+  }
+  /** Weeks an officer can sign in right now: this week, plus past weeks the מג״ד reopened. */
+  const signableWeeks = async () => (await db.all(`SELECT * FROM rounds WHERE status = 'open' OR reopened = 1 ORDER BY number DESC`)).map(roundView);
 
   /**
    * Forms of the given companies in a round: every area that applies to the company, each with its rows
@@ -181,7 +199,7 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
       const areas = rolesFor(c).map((r) => {
         const items = r.items.map((it) => {
           const s = mine.find((x) => x.item_key === it.key);
-          return { key: it.key, label: it.label, signed: !!s, signer_name: s?.signer_name ?? null, signed_at: s?.signed_at ?? null };
+          return { key: it.key, label: it.label, signed: !!s, signer_name: s?.signer_name ?? null, signed_at: s?.signed_at ?? null, by_admin: !!s?.by_admin };
         });
         const old = mine.find((x) => x.item_key === `${r.key}.legacy`);
         const signed = items.filter((i) => i.signed).length;
@@ -317,9 +335,15 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
    *  company → own company's form only
    *  admin   → every company's form
    */
-  route('GET', '/api/state', ANY, async ({ user }) => {
+  route('GET', '/api/state', ANY, async ({ user, query }) => {
     if (user.kind === 'pending') return { pending: true };
-    const r = await shownRound();
+    let r = await shownRound();
+    let officerWeeks = null;
+    if (user.kind === 'officer') {
+      const weeks = await signableWeeks();
+      if (query.round && weeks.some((w) => w.id === Number(query.round))) r = await db.get('SELECT * FROM rounds WHERE id = ?', Number(query.round));
+      officerWeeks = weeks;
+    }
     const round = roundView(r);
     if (user.kind === 'officer') {
       // an officer sees only the rows of his own areas (one block per area), for every company
@@ -330,7 +354,7 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
         return { company: f.company, applies: true, items: mine.items, signed_count: mine.signed_count, total: mine.total, done: mine.done };
       });
       const areas = roleKeysOf(user).map((key) => ({ key, label: ROLE_LABEL[key], companies: companiesOf(key) }));
-      return { round, areas, companies: areas[0]?.companies ?? [] };
+      return { round, weeks: officerWeeks, areas, companies: areas[0]?.companies ?? [] };
     }
     if (user.kind === 'company') return { round, form: (await forms(r?.id, [user.company_key]))[0] };
     return { round, forms: await forms(r?.id, COMPANIES) };
@@ -357,8 +381,7 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
     const signedKeys = [];
     await ensureCurrentRound();
     await db.tx(async (t) => {
-      const r = await openRound(t);
-      if (!r) throw conflict('הטופס של השבוע עוד לא נפתח. נסו שוב בעוד רגע', 'no_round');
+      const r = await signableRound(t, body.round_id);
       const at = nowIso();
       for (const k of keys) {
         const res = await t.run(`INSERT OR IGNORE INTO signatures (round_id, company_key, item_key, role_key, user_id, signer_name, signed_at)
@@ -383,8 +406,7 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
     const since = new Date(clock().getTime() - (UNDO_SECONDS + UNDO_GRACE) * 1000).toISOString();
     let removed = 0;
     await db.tx(async (t) => {
-      const r = await openRound(t);
-      if (!r) throw conflict('אי אפשר לבטל: הטופס של השבוע הזה כבר נסגר', 'no_round');
+      const r = await signableRound(t, body.round_id);
       if (await t.get('SELECT 1 AS x FROM approvals WHERE round_id = ? AND company_key = ?', r.id, c)) {
         throw conflict('אי אפשר לבטל: המג״ד כבר אישר את הטופס של הפלוגה', 'already_approved');
       }
@@ -403,8 +425,7 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
     const c = companyKey(body.company);
     await ensureCurrentRound();
     await db.tx(async (t) => {
-      const r = await openRound(t);
-      if (!r) throw conflict('אין סבב פתוח', 'no_round');
+      const r = await anyRound(t, body.round_id);
       const needed = rolesFor(c).flatMap((ro) => ro.items.map((it) => it.key));
       const have = new Set((await t.all('SELECT item_key FROM signatures WHERE round_id = ? AND company_key = ?', r.id, c)).map((x) => x.item_key));
       const n = needed.filter((k) => have.has(k)).length;
@@ -415,6 +436,75 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
     });
     await changed();
     return { ok: true };
+  });
+
+  /** A week by id (any week, for the מג״ד), or this week's form. */
+  async function anyRound(t, roundId) {
+    if (roundId === undefined || roundId === null || roundId === '') {
+      const r = await openRound(t);
+      if (!r) throw conflict('אין טופס פתוח', 'no_round');
+      return r;
+    }
+    const r = await t.get('SELECT * FROM rounds WHERE id = ?', Number(roundId));
+    if (!r) throw notFound('השבוע לא נמצא');
+    return r;
+  }
+
+  route('POST', '/api/approve/cancel', ADMIN, async ({ body }) => {
+    const c = companyKey(body.company);
+    await db.tx(async (t) => {
+      const r = await anyRound(t, body.round_id);
+      const res = await t.run('DELETE FROM approvals WHERE round_id = ? AND company_key = ?', r.id, c);
+      if (!res.changes) throw conflict('הטופס הזה לא אושר', 'not_approved');
+    });
+    await changed();
+    return { ok: true };
+  });
+
+  /**
+   * Editing a week (the מג״ד): mark a missing row as signed in his own name. It shows as "סומן ע״י המג״ד".
+   * He can take back his own marks, but never an officer's signature.
+   */
+  route('POST', '/api/rounds/:id/mark', ADMIN, async ({ user, params, body }) => {
+    const c = companyKey(body.company);
+    const it = ITEM[body.item];
+    if (!it) throw bad('שורה לא קיימת', 'item');
+    if (!roleApplies(it.role_key, c)) throw conflict('התחום הזה לא רלוונטי לפלוגה הזו', 'not_relevant');
+    await db.tx(async (t) => {
+      const r = await anyRound(t, params.id);
+      const res = await t.run(`INSERT OR IGNORE INTO signatures (round_id, company_key, item_key, role_key, user_id, signer_name, signed_at, by_admin)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1)`, r.id, c, it.key, it.role_key, user.id, user.full_name, nowIso());
+      if (!res.changes) throw conflict('השורה הזו כבר חתומה', 'already_signed');
+    });
+    await changed();
+    return { ok: true };
+  });
+
+  route('POST', '/api/rounds/:id/unmark', ADMIN, async ({ params, body }) => {
+    const c = companyKey(body.company);
+    if (!ITEM[body.item]) throw bad('שורה לא קיימת', 'item');
+    await db.tx(async (t) => {
+      const r = await anyRound(t, params.id);
+      const s = await t.get('SELECT * FROM signatures WHERE round_id = ? AND company_key = ? AND item_key = ?', r.id, c, body.item);
+      if (!s) throw notFound('השורה לא חתומה');
+      if (!s.by_admin) throw new HttpError(403, 'אי אפשר למחוק חתימה של קצין מטה — רק סימון שהמג״ד עשה', 'officer_signature');
+      if (await t.get('SELECT 1 AS x FROM approvals WHERE round_id = ? AND company_key = ?', r.id, c)) {
+        throw conflict('הטופס כבר אושר. קודם בטלו את האישור', 'already_approved');
+      }
+      await t.run('DELETE FROM signatures WHERE round_id = ? AND company_key = ? AND item_key = ?', r.id, c, body.item);
+    });
+    await changed();
+    return { ok: true };
+  });
+
+  /** Reopen a past week for the officers (they can sign in it late), or lock it again. */
+  route('POST', '/api/rounds/:id/reopen', ADMIN, async ({ params, body }) => {
+    const r = await db.get('SELECT * FROM rounds WHERE id = ?', Number(params.id));
+    if (!r) throw notFound('השבוע לא נמצא');
+    if (r.status === 'open') throw conflict('זה הטופס של השבוע הנוכחי — הוא כבר פתוח', 'current_week');
+    await db.run('UPDATE rounds SET reopened = ? WHERE id = ?', body.open ? 1 : 0, r.id);
+    await changed();
+    return { round: roundView(await db.get('SELECT * FROM rounds WHERE id = ?', r.id)) };
   });
 
   route('GET', '/api/rounds', ADMIN, async () => {
@@ -600,7 +690,8 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
         if (typeof rt.kinds === 'function') { if (!rt.kinds(user)) throw forbidden(); }
         else if (rt.kinds && !rt.kinds.includes(user.kind)) throw forbidden();
       }
-      sendJson(res, 200, await rt.handler({ req, res, user, params, body }));
+      const query = Object.fromEntries(url.searchParams);
+      sendJson(res, 200, await rt.handler({ req, res, user, params, body, query }));
     } catch (e) {
       if (e instanceof HttpError) return sendJson(res, e.status, { error: e.message, code: e.code });
       log.error?.(e);

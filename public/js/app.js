@@ -69,8 +69,11 @@ const TABS = () => (me.kind === 'admin' ? ['round', 'users', 'history', 'profile
   : me.kind === 'officer' ? [...signTabs(), ...(me.can_manage_users ? ['users'] : []), 'profile'] : ['round', 'profile']);
 const homeTab = () => (me.kind === 'officer' && signTabs().length ? signTabs()[0] : 'round');
 const isRoundTab = (t) => t === 'round' || t.startsWith('sign-');
+let officerWeek = null;   // officer: a past week the מג״ד reopened, chosen above the company list (null = this week)
+let editData = null;      // מג״ד: the past week being edited
 function tabFromHash() {
   const t = location.hash.replace('#/', '') || homeTab();
+  if (me.kind === 'admin' && /^edit-\d+$/.test(t)) return t;
   return TABS().includes(t) ? t : homeTab();
 }
 window.addEventListener('hashchange', () => { if (!me) return; const t = tabFromHash(); if (t !== tab) { tab = t; show(); } });
@@ -97,12 +100,14 @@ async function show() {
   if (tab === 'profile') return renderProfile(ctx);
   if (tab === 'users') return renderUsers(ctx);
   if (tab === 'history') return renderHistory(ctx);
+  if (tab.startsWith('edit-')) return renderEdit(Number(tab.slice(5)));
   return refresh();
 }
 const roleLabel = (k) => meta.roles.find((r) => r.key === k)?.label || k;
 
 async function refresh() {
-  state = await api.get('/api/state');
+  state = await api.get(`/api/state${me.kind === 'officer' && officerWeek ? `?round=${officerWeek}` : ''}`);
+  if (officerWeek && state.round?.id !== officerWeek) officerWeek = null;   // that week was locked again
   render();
 }
 
@@ -153,6 +158,7 @@ async function onChange() {
     }
     if (isRoundTab(tab)) return show().catch(() => {});   // also updates the "pending" badge
     if (tab === 'users' && !document.querySelector('dialog[open]')) return renderUsers(ctx);
+    if (tab.startsWith('edit-')) return renderEdit(Number(tab.slice(5)));
   }
 }
 function stopEvents() { if (events) clearInterval(events); events = null; }
@@ -236,7 +242,7 @@ function shell(content) {
   const tabs = tabList ? `
     <nav class="tabs" aria-label="מסכים">
       ${tabList.map(([k, l]) =>
-        `<button class="tab" data-tab="${k}" ${tab === k ? 'aria-current="page"' : ''}>${l}${k === 'users' && pendingCount ? `<span class="badge" aria-label="${pendingCount} ממתינים">${pendingCount}</span>` : ''}</button>`).join('')}
+        `<button class="tab" data-tab="${k}" ${tab === k || (k === 'history' && tab.startsWith('edit-')) ? 'aria-current="page"' : ''}>${l}${k === 'users' && pendingCount ? `<span class="badge" aria-label="${pendingCount} ממתינים">${pendingCount}</span>` : ''}</button>`).join('')}
     </nav>` : '';
   const noPhone = !me.phone && tab !== 'profile'
     ? '<div class="notice info">📱 חסר מספר טלפון בחשבון שלך. <a href="#/profile">להוספה בפרופיל</a></div>' : '';
@@ -320,7 +326,7 @@ function renderOfficer(areaKey) {
   const area = state.areas?.find((a) => a.key === areaKey) || state.areas?.[0];
   if (!area) return renderPending();
   const { companies } = area;
-  const open = round?.status === 'open';
+  const open = round?.status === 'open' || !!round?.reopened;
   if (!selected || !companies.some((c) => c.company === selected)) {
     selected = (companies.find((c) => c.applies && !c.done) || companies.find((c) => c.applies) || companies[0]).company;
   }
@@ -351,8 +357,14 @@ function renderOfficer(areaKey) {
       <ul class="item-list">${rows}</ul>
       <div class="sign-all">${all}${open ? '' : '<p class="sign-meta">הטופס של השבוע הזה נסגר. טופס חדש ייפתח ביום שני ב־00:00</p>'}</div>`;
   }
+  const weeks = state.weeks || [];
+  const chooser = weeks.length > 1 ? `<div class="week-pick" role="tablist" aria-label="באיזה שבוע לחתום">${weeks.map((w) => `
+      <button type="button" role="tab" class="week-tab ${w.status === 'open' ? '' : 'late'}" data-week="${w.id}" aria-selected="${w.id === round.id}">
+        ${w.status === 'open' ? `השבוע · ${esc(weekName(w))}` : `${esc(weekName(w))} · פתוח לחתימה מאוחרת`}</button>`).join('')}</div>` : '';
+  const lateNote = round?.reopened ? `<div class="notice">✍️ את/ה חותם/ת עכשיו ב<b>${esc(weekName(round))}</b>${round.starts_on ? ` (${esc(weekDates(round))})` : ''} — שבוע קודם שהמג״ד פתח לחתימה מאוחרת.</div>` : '';
   shell(`
     ${round && open ? '' : roundBar(round)}
+    ${chooser}${lateNote}
     <div class="split">
       <nav class="co-list" aria-label="פלוגות"><h2>פלוגות${round ? ` · ${esc(weekName(round))}` : ''}</h2>${list}</nav>
       <section class="panel sign-panel" aria-live="polite">
@@ -365,11 +377,16 @@ function renderOfficer(areaKey) {
     selected = b.dataset.co; renderOfficer(area.key);
     if (matchMedia('(max-width: 760px)').matches) app.querySelector('.sign-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }));
+  app.querySelectorAll('[data-week]').forEach((b) => b.addEventListener('click', () => {
+    const id = Number(b.dataset.week);
+    officerWeek = weeks.find((w) => w.id === id)?.status === 'open' ? null : id;
+    refresh().catch((ex) => toast(ex.message, 'error'));
+  }));
   const sign = async (btn, extra, okText) => {
     btn.disabled = true;
     try {
-      const r = await api.post('/api/sign', { company: cur.company, ...extra });
-      showUndo(cur.company, r.items, r.undo_seconds || 10, okText);
+      const r = await api.post('/api/sign', { company: cur.company, ...extra, ...(officerWeek ? { round_id: officerWeek } : {}) });
+      showUndo(cur.company, r.items, r.undo_seconds || 10, okText, officerWeek);
       offerInstallBar();
     }
     catch (ex) { toast(ex.message, 'error'); }
@@ -385,7 +402,7 @@ const FINAL_TEXT = {
   awaiting_approval: 'כל קציני המטה חתמו — ממתינים לאישור מג״ד',
   approved: 'הטופס אושר על ידי המג״ד',
 };
-function formView(f, { openRound = false, round = null } = {}) {
+function formView(f, { openRound = false, round = null, edit = false } = {}) {
   const areas = f.areas.map((a) => {
     const st = a.legacy && !a.signed_count
       ? `${yes('נחתם')} <span class="role-by">${esc(a.legacy.signer_name)} · ${esc(fmtStamp(a.legacy.signed_at))} (גרסה קודמת)</span>`
@@ -393,9 +410,13 @@ function formView(f, { openRound = false, round = null } = {}) {
     const rows = a.items.map((it) => `
       <li class="item-row ${it.signed ? 'signed' : ''}">
         <span class="item-name">${esc(it.label)}</span>
-        <span class="item-st">${it.signed ? `${yes('חתם')}<span class="role-by">${esc(it.signer_name)} · ${esc(fmtStamp(it.signed_at))}</span>` : no('טרם חתם')}</span>
+        <span class="item-st">${it.signed
+          ? `${yes(it.by_admin ? 'סומן ע״י המג״ד' : 'חתם')}<span class="role-by">${esc(it.signer_name)} · ${esc(fmtStamp(it.signed_at))}</span>`
+          : no('טרם חתם')}</span>
+        ${edit && !it.signed ? `<button type="button" class="btn btn-sm no-print" data-mark="${esc(it.key)}">סמן כחתום</button>` : ''}
+        ${edit && it.by_admin && f.status !== 'approved' ? `<button type="button" class="btn btn-sm btn-ghost no-print" data-unmark="${esc(it.key)}">בטל סימון</button>` : ''}
       </li>`).join('');
-    return `<details class="area ${a.done ? 'done' : ''}" ${openRound && !a.done && a.signed_count ? 'open' : ''}>
+    return `<details class="area ${a.done ? 'done' : ''}" data-area="${esc(a.key)}" ${(openRound && !a.done && a.signed_count) || (edit && openAreas.has(a.key)) ? 'open' : ''}>
       <summary><span class="area-name">${esc(a.label)}</span><span class="area-st">${st}</span></summary>
       <ul class="item-list">${rows}</ul></details>`;
   }).join('');
@@ -420,7 +441,8 @@ function formView(f, { openRound = false, round = null } = {}) {
 /** "הורדת PDF": draws the form on A4 pages and downloads the file (see /js/pdf.js). */
 async function downloadPdf(btn) {
   if (btn.disabled) return;
-  const form = state?.form?.company === btn.dataset.company ? state.form : state?.forms?.find((x) => x.company === btn.dataset.company);
+  const src = tab.startsWith('edit-') && editData ? editData : state;
+  const form = src?.form?.company === btn.dataset.company ? src.form : src?.forms?.find((x) => x.company === btn.dataset.company);
   if (!form) return;
   btn.disabled = true;
   const overlay = document.createElement('div');
@@ -430,7 +452,7 @@ async function downloadPdf(btn) {
   document.body.append(overlay);
   try {
     const { downloadFormPdf } = await import('./pdf.js');
-    await downloadFormPdf({ form, round: state.round, title: coName(form.company), filename: btn.dataset.name || 'טופס טיולים' });
+    await downloadFormPdf({ form, round: src.round, title: coName(form.company), filename: btn.dataset.name || 'טופס טיולים' });
     toast('קובץ ה־PDF הורד ✓', 'ok');
   } catch (ex) {
     toast(ex.message || 'יצירת ה־PDF נכשלה. נסו שוב', 'error');
@@ -462,14 +484,7 @@ function renderAdmin() {
     <button class="co" data-co="${esc(x.company)}" aria-current="${x.company === selected}">
       <span class="co-name">${esc(coName(x.company))}</span><span class="co-st">${coStatus(x)}</span>
     </button>`).join('');
-  let approve = '';
-  if (round && f.status !== 'approved') {
-    const ready = f.status === 'awaiting_approval';
-    approve = `<div class="approve-box">
-      <button class="btn-sign" data-approve ${ready && open ? '' : 'disabled'}>אישור סופי לטופס</button>
-      <span class="muted small">${!open ? 'השבוע נגמר — אין אפשרות לאשר' : ready ? 'כל השורות נחתמו' : `${f.total - f.signed_count === 1 ? 'חסרה שורה אחת' : `חסרות ${f.total - f.signed_count} שורות`} — האישור ייפתח כשכל השורות ייחתמו`}</span>
-    </div>`;
-  }
+  const approve = round ? approveBox(f) : '';
   shell(`
     ${roundBar(round)}
     ${round ? `<div class="split">
@@ -480,18 +495,88 @@ function renderAdmin() {
     selected = b.dataset.co; renderAdmin();
     if (matchMedia('(max-width: 760px)').matches) app.querySelector('.panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }));
+  wireApprove(f, null, refresh);
+}
+
+/** Final approval, or cancelling it (any week). */
+function approveBox(f) {
+  if (f.status === 'approved') {
+    return `<div class="approve-box"><button type="button" class="btn btn-danger" data-unapprove>ביטול האישור</button></div>`;
+  }
+  const ready = f.status === 'awaiting_approval';
+  return `<div class="approve-box">
+    <button class="btn-sign" data-approve ${ready ? '' : 'disabled'}>אישור סופי לטופס</button>
+    <span class="muted small">${ready ? 'כל השורות נחתמו' : `${f.total - f.signed_count === 1 ? 'חסרה שורה אחת' : `חסרות ${f.total - f.signed_count} שורות`} — האישור ייפתח כשכל השורות ייחתמו`}</span>
+  </div>`;
+}
+function wireApprove(f, roundId, reload) {
+  const extra = roundId ? { round_id: roundId } : {};
   app.querySelector('[data-approve]')?.addEventListener('click', async (e) => {
     e.currentTarget.disabled = true;
-    try { await api.post('/api/approve', { company: f.company }); toast(`הטופס של ${coName(f.company)} אושר ✓`, 'ok'); }
+    try { await api.post('/api/approve', { company: f.company, ...extra }); toast(`הטופס של ${coName(f.company)} אושר ✓`, 'ok'); }
     catch (ex) { toast(ex.message, 'error'); }
-    await refresh();
+    await reload();
   });
+  app.querySelector('[data-unapprove]')?.addEventListener('click', async () => {
+    if (!(await confirmSheet({ title: 'ביטול האישור', text: `לבטל את האישור הסופי של ${coName(f.company)}? אפשר לאשר שוב אחר כך.`, confirmLabel: 'ביטול האישור' }))) return;
+    try { await api.post('/api/approve/cancel', { company: f.company, ...extra }); toast('האישור בוטל', 'ok'); }
+    catch (ex) { toast(ex.message, 'error'); }
+    await reload();
+  });
+}
+
+// ---------- מג״ד: editing a past week (history → עריכה) ----------
+let openAreas = new Set();   // areas left open while editing, kept across reloads
+async function renderEdit(id) {
+  let data;
+  try { data = await api.get(`/api/rounds/${id}`); } catch (ex) { toast(ex.message, 'error'); location.hash = '#/history'; return; }
+  if (tab !== `edit-${id}`) return;
+  editData = data;
+  const { round, forms } = data;
+  if (!selected || !forms.some((x) => x.company === selected)) selected = forms[0].company;
+  const f = forms.find((x) => x.company === selected);
+  const list = forms.map((x) => `
+    <button class="co" data-co="${esc(x.company)}" aria-current="${x.company === selected}">
+      <span class="co-name">${esc(coName(x.company))}</span><span class="co-st">${coStatus(x)}</span>
+    </button>`).join('');
+  const current = round.status === 'open';
+  const state_ = current ? '<span class="tag">השבוע הנוכחי</span>' : round.reopened ? '<span class="tag pend">פתוח לחתימה מאוחרת</span>' : '<span class="tag">🔒 נעול לקציני המטה</span>';
+  const reopenBtn = current ? '' : round.reopened
+    ? '<button type="button" class="btn btn-big" data-lock>🔒 נעילה</button>'
+    : '<button type="button" class="btn btn-primary btn-big" data-reopen>פתיחה לקציני המטה</button>';
+  shell(`
+    <div class="round-bar edit-bar">
+      <div class="rb-text"><b>עריכת ${esc(weekName(round))}</b> ${state_} <span class="muted">${esc(weekDates(round))}</span>
+        <div class="muted small">סמנו שורות חסרות בשמכם, אשרו או בטלו אישור${current ? '' : ', או פתחו את השבוע כדי שקציני המטה יחתמו בו באיחור'}. חתימות של קציני מטה אי אפשר למחוק.</div></div>
+      ${reopenBtn}
+      <a class="btn" href="#/history">חזרה להיסטוריה</a>
+    </div>
+    <div class="split">
+      <nav class="co-list" aria-label="פלוגות"><h2>פלוגות · ${forms.filter((x) => x.status === 'approved').length}/${forms.length} אושרו</h2>${list}</nav>
+      <section class="panel">${formView(f, { round, edit: true })}${approveBox(f)}</section>
+    </div>`);
+  const reload = () => renderEdit(id);
+  app.querySelectorAll('details.area').forEach((d) => d.addEventListener('toggle', () => { if (d.open) openAreas.add(d.dataset.area); else openAreas.delete(d.dataset.area); }));
+  app.querySelectorAll('[data-co]').forEach((b) => b.addEventListener('click', () => { selected = b.dataset.co; openAreas = new Set(); reload(); }));
+  app.querySelectorAll('[data-mark]').forEach((b) => b.addEventListener('click', () => busyCall(b, () => api.post(`/api/rounds/${id}/mark`, { company: f.company, item: b.dataset.mark }), 'סומן כחתום', reload)));
+  app.querySelectorAll('[data-unmark]').forEach((b) => b.addEventListener('click', () => busyCall(b, () => api.post(`/api/rounds/${id}/unmark`, { company: f.company, item: b.dataset.unmark }), 'הסימון בוטל', reload)));
+  app.querySelector('[data-reopen]')?.addEventListener('click', async () => {
+    if (!(await confirmSheet({ title: `פתיחת ${weekName(round)} לחתימה`, text: 'קציני המטה יוכלו לבחור את השבוע הזה ולחתום בו באיחור, עד שתנעלו אותו שוב.', confirmLabel: 'פתיחה' }))) return;
+    busyCall(null, () => api.post(`/api/rounds/${id}/reopen`, { open: true }), 'השבוע נפתח לקציני המטה', reload);
+  });
+  app.querySelector('[data-lock]')?.addEventListener('click', () => busyCall(null, () => api.post(`/api/rounds/${id}/reopen`, { open: false }), 'השבוע ננעל', reload));
+  wireApprove(f, id, reload);
+}
+async function busyCall(btn, fn, okText, reload) {
+  if (btn) btn.disabled = true;
+  try { await fn(); toast(okText, 'ok'); } catch (ex) { toast(ex.message, 'error'); }
+  await reload();
 }
 
 
 // ---------- undo a signature (10 seconds) ----------
 let undoBar = null;
-function showUndo(company, items, seconds, okText) {
+function showUndo(company, items, seconds, okText, roundId = null) {
   undoBar?.close();
   if (!items?.length) return toast(okText, 'ok');
   const el = document.createElement('div');
@@ -507,7 +592,7 @@ function showUndo(company, items, seconds, okText) {
   el.querySelector('.undo-btn').addEventListener('click', async (e) => {
     e.currentTarget.disabled = true;
     try {
-      const r = await api.post('/api/sign/undo', { company, items });
+      const r = await api.post('/api/sign/undo', { company, items, ...(roundId ? { round_id: roundId } : {}) });
       toast(r.removed === 1 ? 'החתימה בוטלה' : `${r.removed} חתימות בוטלו`, 'ok');
     } catch (ex) { toast(ex.message, 'error'); }
     close();
