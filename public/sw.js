@@ -1,10 +1,10 @@
 // Service worker: lets the app be installed to the home screen and opens fast.
 // Network first (a new deploy reaches every phone at once); the cache is only a fallback when offline.
 // API data is never cached — the shared database is always the source of truth.
-const CACHE = 'tiyulim-v6';
+const CACHE = 'tiyulim-v7';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/js/app.js', '/js/api.js', '/js/util.js', '/js/views.js', '/js/install.js',
-  '/js/onboarding.js', '/js/theme-boot.js', '/icons/logo.png', '/icons/favicon-64.png', '/icons/icon-192.png', '/css/splash.css', '/js/splash-boot.js', '/js/pdf.js', '/manifest.webmanifest',
+  '/js/onboarding.js', '/js/theme-boot.js', '/icons/logo.png', '/icons/favicon-64.png', '/icons/icon-192.png', '/css/splash.css', '/js/splash-boot.js', '/js/pdf.js', '/js/uploads.js', '/manifest.webmanifest',
 ];
 
 self.addEventListener('install', (e) => {

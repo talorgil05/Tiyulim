@@ -435,3 +435,21 @@ html[data-theme="dark"] .pdf-overlay { background: rgba(14,21,36,.96); color: #E
 .who-am-i .area-pick { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); max-height: 260px; overflow: auto; padding: 2px; }
 .req-line { background: var(--card); border: 1px dashed var(--orange); border-radius: 10px; padding: .35rem .6rem; font-size: .92rem; }
 .btn-ok-solid { background: #157F3D; border-color: #157F3D; color: #fff; }
+
+/* ---------- weekly uploads (photos / PDF) ---------- */
+.uploads { margin: .4rem 0 .2rem; }
+.up-title { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; font-size: 1.1rem; color: var(--navy); margin: 0 0 .5rem; }
+.up-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .5rem; }
+.up-card { border: 1.5px dashed var(--navy-line); border-radius: 12px; padding: .6rem .7rem; display: grid; gap: .45rem; align-content: start; background: var(--card); }
+.up-card.ok { border-style: solid; border-color: var(--ok-line); }
+.up-head { display: flex; align-items: center; gap: .5rem; justify-content: space-between; flex-wrap: wrap; }
+.up-st { display: inline-flex; align-items: center; gap: .3rem; font-weight: 700; font-size: .9rem; }
+.up-files { display: flex; flex-wrap: wrap; gap: .4rem; }
+.up-file { position: relative; display: inline-flex; }
+.up-thumb img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); display: block; background: var(--soft, #F3F6FB); }
+.up-pdf { display: inline-flex; align-items: center; gap: .3rem; padding: .35rem .55rem; border-radius: 8px; border: 1px solid var(--line); background: var(--navy-soft); color: var(--navy); text-decoration: none; font-weight: 700; font-size: .88rem; max-width: 190px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.up-pdf small { font-weight: 400; color: var(--muted); }
+.up-file.gone { font-size: .82rem; color: var(--muted); padding: .3rem .4rem; border: 1px dashed var(--line); border-radius: 8px; }
+.up-del { position: absolute; top: -7px; inset-inline-start: -7px; width: 24px; height: 24px; border-radius: 50%; border: 0; background: #B42318; color: #fff; font-size: .75rem; line-height: 1; cursor: pointer; display: grid; place-items: center; }
+.up-add { justify-self: start; cursor: pointer; }
+.sign-panel .uploads { margin-top: 1.2rem; text-align: start; }

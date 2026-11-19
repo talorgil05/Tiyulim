@@ -8,6 +8,7 @@ import { hashPassword, verifyPassword, dummyVerify, newToken, tokenHash, randomP
 import { ROLES, ROLE_KEYS, ROLE_LABEL, COMPANIES, KINDS, KIND_LABEL, ITEM, rolesFor, roleApplies, canManageUsers, roleKeysOf } from './constants.js';
 import { normalizeName, isValidName, NAME_TAKEN_MSG } from './names.js';
 import { currentWeek } from './week.js';
+import { registerUploads } from './uploads.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -227,16 +228,24 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
     });
   }
 
+  /** Each form gets the files its company uploaded this week (only the items this user may see). */
+  async function withUploads(user, roundId, list) {
+    const map = await uploadsOf(user, roundId, list.map((f) => f.company));
+    for (const f of list) f.uploads = map[f.company] || [];
+    return list;
+  }
+
   // ---------- routes ----------
   const routes = [];
-  const route = (method, pattern, kinds, handler) => {
+  const route = (method, pattern, kinds, handler, opts = {}) => {
     const keys = [];
     const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
-    routes.push({ method, re, keys, kinds, handler });
+    routes.push({ method, re, keys, kinds, handler, maxBody: opts.maxBody });
   };
   const PUBLIC = 'public';
   const ANY = null;
   const ADMIN = ['admin'];
+  const { uploadsOf } = registerUploads({ route, db, HttpError, bad, conflict, notFound, nowIso, clock, changed, companyKey });
   /** Who may assign permissions: the מג״ד, and the קשר״ג (everything except מג״ד). */
   const USER_MANAGERS = (u) => canManageUsers(u);
 
@@ -374,10 +383,10 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
         return { company: f.company, applies: true, items: mine.items, signed_count: mine.signed_count, total: mine.total, done: mine.done };
       });
       const areas = roleKeysOf(user).map((key) => ({ key, label: ROLE_LABEL[key], companies: companiesOf(key) }));
-      return { round, weeks: officerWeeks, areas, companies: areas[0]?.companies ?? [] };
+      return { round, weeks: officerWeeks, areas, companies: areas[0]?.companies ?? [], uploads: await uploadsOf(user, r?.id, COMPANIES) };
     }
-    if (user.kind === 'company') return { round, form: (await forms(r?.id, [user.company_key]))[0] };
-    return { round, forms: await forms(r?.id, COMPANIES) };
+    if (user.kind === 'company') return { round, form: (await withUploads(user, r?.id, await forms(r?.id, [user.company_key])))[0] };
+    return { round, forms: await withUploads(user, r?.id, await forms(r?.id, COMPANIES)) };
   });
 
   /**
@@ -534,10 +543,10 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
     return { rounds: rows.map((r) => ({ ...roundView(r), approved: counts.find((c) => c.round_id === r.id)?.n || 0, total: COMPANIES.length })) };
   });
 
-  route('GET', '/api/rounds/:id', ADMIN, async ({ params }) => {
+  route('GET', '/api/rounds/:id', ADMIN, async ({ user, params }) => {
     const r = await db.get('SELECT * FROM rounds WHERE id = ?', Number(params.id));
     if (!r) throw notFound('הסבב לא נמצא');
-    return { round: roundView(r), forms: await forms(r.id, COMPANIES) };
+    return { round: roundView(r), forms: await withUploads(user, r.id, await forms(r.id, COMPANIES)) };
   });
 
   // --- מג״ד: users and permissions ---
@@ -703,7 +712,7 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
         }
       }
       const params = Object.fromEntries(rt.keys.map((k, i) => [k, decodeURIComponent(match[i + 1])]));
-      const body = req.method === 'GET' ? {} : await readBody(req);
+      const body = req.method === 'GET' ? {} : await readBody(req, rt.maxBody);
       let user = null;
       if (rt.kinds !== PUBLIC) {
         user = await currentUser(req);
@@ -712,7 +721,15 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
         else if (rt.kinds && !rt.kinds.includes(user.kind)) throw forbidden();
       }
       const query = Object.fromEntries(url.searchParams);
-      sendJson(res, 200, await rt.handler({ req, res, user, params, body, query }));
+      const result = await rt.handler({ req, res, user, params, body, query });
+      if (result && result.__binary) {
+        res.writeHead(200, {
+          'Content-Type': result.type, 'Content-Length': result.buffer.length, 'Cache-Control': 'private, max-age=86400',
+          'Content-Disposition': `inline; filename="file"; filename*=UTF-8''${encodeURIComponent(result.filename || 'file')}`,
+        });
+        return res.end(result.buffer);
+      }
+      sendJson(res, 200, result);
     } catch (e) {
       if (e instanceof HttpError) return sendJson(res, e.status, { error: e.message, code: e.code });
       log.error?.(e);

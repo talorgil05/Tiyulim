@@ -3,6 +3,7 @@ import { esc, fmtStamp, coName, yes, no, toast, confirmSheet, ICONS, addPassword
 import { renderUsers, renderHistory, renderProfile, kindText } from './views.js';
 import { openInstallGuide, offerInstallBar } from './install.js';
 import { maybeShowTour } from './onboarding.js';
+import { uploadsView, wireUploads } from './uploads.js';
 
 const app = document.getElementById('app');
 let me = null;          // the logged-in user
@@ -396,6 +397,7 @@ function renderOfficer(areaKey) {
         <h1 class="sign-co">${esc(coName(cur.company))}</h1>
         <p class="sign-role">חותם/ת בתור: <b>${esc(area.label)}</b></p>
         ${body}
+        ${cur.applies ? uploadsView(state.uploads?.[cur.company], { title: 'קבצים שהפלוגה העלתה' }) : ''}
       </section>
     </div>`);
   app.querySelectorAll('[data-co]').forEach((b) => b.addEventListener('click', () => {
@@ -427,7 +429,7 @@ const FINAL_TEXT = {
   awaiting_approval: 'כל קציני המטה חתמו — ממתינים לאישור מג״ד',
   approved: 'הטופס אושר על ידי המג״ד',
 };
-function formView(f, { openRound = false, round = null, edit = false } = {}) {
+function formView(f, { openRound = false, round = null, edit = false, up = {} } = {}) {
   const areas = f.areas.map((a) => {
     const st = a.legacy && !a.signed_count
       ? `${yes('נחתם')} <span class="role-by">${esc(a.legacy.signer_name)} · ${esc(fmtStamp(a.legacy.signed_at))} (גרסה קודמת)</span>`
@@ -457,7 +459,8 @@ function formView(f, { openRound = false, round = null, edit = false } = {}) {
     <div class="form-head"><h1>${esc(coName(f.company))}</h1>
       <button type="button" class="btn btn-sm no-print" data-pdf data-company="${esc(f.company)}" data-name="${esc(`טופס טיולים - ${coName(f.company)}${round ? ` - ${weekName(round)}` : ''}`)}">⬇ הורדת PDF</button>
       <span class="count">${f.areas_done}/${f.areas_total} תחומים · ${f.signed_count}/${f.total} שורות</span></div>
-    <p class="small muted" style="margin-top:-.4rem">לחיצה על תחום מציגה את השורות שלו, מי חתם ומתי.</p>
+    ${uploadsView(f.uploads, up)}
+    <p class="small muted" style="margin-top:.8rem">לחיצה על תחום מציגה את השורות שלו, מי חתם ומתי.</p>
     <div class="areas">${areas}</div>
     <div class="final ${f.status}" role="status">${markFinal}<div>אישור מג״ד: ${FINAL_TEXT[f.status]}
       ${f.approval ? `<small>אושר על ידי ${esc(f.approval.approver_name)} · ${esc(fmtStamp(f.approval.approved_at))}</small>` : ''}</div></div>`;
@@ -490,7 +493,9 @@ document.addEventListener('click', (e) => { const b = e.target.closest('[data-pd
 
 function renderCompany() {
   const { round, form } = state;
-  shell(`${roundBar(round)}<section class="panel">${round ? formView(form, { openRound: round.status === 'open', round }) : `<div class="form-head"><h1>${esc(coName(me.company_key))}</h1></div><p class="muted">הטופס של השבוע נטען…</p>`}</section>`);
+  const open = round?.status === 'open';
+  shell(`${roundBar(round)}<section class="panel">${round ? formView(form, { openRound: open, round, up: { canUpload: open, canDelete: open } }) : `<div class="form-head"><h1>${esc(coName(me.company_key))}</h1></div><p class="muted">הטופס של השבוע נטען…</p>`}</section>`);
+  if (round) wireUploads(app, { company: form.company, reload: refresh });
 }
 
 // ---------- מג״ד ----------
@@ -514,13 +519,14 @@ function renderAdmin() {
     ${roundBar(round)}
     ${round ? `<div class="split">
       <nav class="co-list" aria-label="פלוגות"><h2>פלוגות · ${forms.filter((x) => x.status === 'approved').length}/${forms.length} אושרו</h2>${list}</nav>
-      <section class="panel">${formView(f, { openRound: open, round })}${approve}</section>
+      <section class="panel">${formView(f, { openRound: open, round, up: { canDelete: true } })}${approve}</section>
     </div>` : ''}`);
   app.querySelectorAll('[data-co]').forEach((b) => b.addEventListener('click', () => {
     selected = b.dataset.co; renderAdmin();
     if (matchMedia('(max-width: 760px)').matches) app.querySelector('.panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }));
   wireApprove(f, null, refresh);
+  wireUploads(app, { company: f.company, reload: refresh });
 }
 
 /** Final approval, or cancelling it (any week). */
@@ -578,7 +584,7 @@ async function renderEdit(id) {
     </div>
     <div class="split">
       <nav class="co-list" aria-label="פלוגות"><h2>פלוגות · ${forms.filter((x) => x.status === 'approved').length}/${forms.length} אושרו</h2>${list}</nav>
-      <section class="panel">${formView(f, { round, edit: true })}${approveBox(f)}</section>
+      <section class="panel">${formView(f, { round, edit: true, up: { canUpload: true, canDelete: true } })}${approveBox(f)}</section>
     </div>`);
   const reload = () => renderEdit(id);
   app.querySelectorAll('details.area').forEach((d) => d.addEventListener('toggle', () => { if (d.open) openAreas.add(d.dataset.area); else openAreas.delete(d.dataset.area); }));
@@ -591,6 +597,7 @@ async function renderEdit(id) {
   });
   app.querySelector('[data-lock]')?.addEventListener('click', () => busyCall(null, () => api.post(`/api/rounds/${id}/reopen`, { open: false }), 'השבוע ננעל', reload));
   wireApprove(f, id, reload);
+  wireUploads(app, { company: f.company, roundId: id, reload });
 }
 async function busyCall(btn, fn, okText, reload) {
   if (btn) btn.disabled = true;

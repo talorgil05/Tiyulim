@@ -109,6 +109,22 @@ export async function downloadFormPdf({ form, round, title, filename }) {
     y += 18;
   }
 
+  // weekly uploads (what the company uploaded)
+  if (form.uploads?.length) {
+    room(HEAD + 40 * form.uploads.length + 20);
+    rect(M, y, W - 2 * M, HEAD, C.soft, null, 12);
+    text('קבצים שהועלו השבוע', W - M - 20, y + HEAD / 2, { size: 28, weight: 800, color: C.navy });
+    text(`${form.uploads.filter((u) => u.count).length}/${form.uploads.length}`, M + 20, y + HEAD / 2, { size: 24, weight: 700, color: C.ink2, align: 'left' });
+    y += HEAD + 6;
+    for (const u of form.uploads) {
+      text(u.label, W - M - 24, y + 20, { size: 24 });
+      mark(M + 30, y + 20, u.count > 0);
+      text(u.count ? (u.count === 1 ? 'קובץ אחד' : `${u.count} קבצים`) : 'חסר', M + 54, y + 20, { size: 21, color: u.count ? C.ok : C.muted, align: 'left' });
+      y += 40;
+    }
+    y += 18;
+  }
+
   // the מג״ד's approval
   room(110);
   const FINAL = {

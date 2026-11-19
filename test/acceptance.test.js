@@ -35,7 +35,7 @@ function client() {
     if (set) cookie = set.split(';')[0];
     return { status: res.status, data: await res.json().catch(() => null) };
   };
-  return { get: (u) => call('GET', u), post: (u, b, o) => call('POST', u, b, o), patch: (u, b) => call('PATCH', u, b) };
+  return { get: (u) => call('GET', u), post: (u, b, o) => call('POST', u, b, o), patch: (u, b) => call('PATCH', u, b), raw: (u) => fetch(base + u, { headers: { cookie } }) };
 }
 
 const admin = client();
@@ -417,6 +417,49 @@ test('editing a past week: the מג״ד marks missing rows, reopens it for offic
   // after approval his own marks are locked until the approval is cancelled
   assert.equal((await admin.post(`/api/rounds/${w47.id}/mark`, { company: 'ב', item: 'samgad.1' })).status, 200);
   assert.equal((await officers.tikshuv.post('/api/approve/cancel', { company: 'א', round_id: w47.id })).status, 403);
+});
+
+test('weekly uploads: the company uploads, the מג״ד and the matching officer see them, nobody else', async () => {
+  const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1, 0xff, 0xd9]).toString('base64');
+  const PDF = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF').toString('base64');
+  const up = (who, body) => who.post('/api/uploads', body);
+  // the company itself uploads (several files per item)
+  const a1 = await up(companies['ב'], { company: 'ב', item: 'cars', file: { name: 'רכב 1.jpg', mime: 'image/jpeg', data: JPEG } });
+  assert.equal(a1.status, 200, JSON.stringify(a1.data));
+  assert.equal((await up(companies['ב'], { company: 'ב', item: 'cars', file: { name: 'רכב 2.jpg', mime: 'image/jpeg', data: JPEG } })).status, 200);
+  const p1 = await up(companies['ב'], { company: 'ב', item: 'klia', file: { name: 'מעקב.pdf', mime: 'application/pdf', data: PDF } });
+  assert.equal(p1.status, 200);
+  // wrong type / fake content / another company / an officer: refused
+  assert.equal((await up(companies['ב'], { company: 'ב', item: 'cars', file: { name: 'x.txt', mime: 'text/plain', data: PDF } })).data.code, 'file_type');
+  assert.equal((await up(companies['ב'], { company: 'ב', item: 'cars', file: { name: 'x.jpg', mime: 'image/jpeg', data: PDF } })).data.code, 'file');
+  assert.equal((await up(companies['ג'], { company: 'ב', item: 'cars', file: { name: 'x.jpg', mime: 'image/jpeg', data: JPEG } })).status, 403);
+  assert.equal((await up(officers.lag, { company: 'ב', item: 'cars', file: { name: 'x.jpg', mime: 'image/jpeg', data: JPEG } })).status, 403);
+  assert.equal((await up(companies['ב'], { company: 'ב', item: 'nope', file: { name: 'x.jpg', mime: 'image/jpeg', data: JPEG } })).data.code, 'item');
+
+  // the company sees all 5 items of its own form
+  const mine = (await companies['ב'].get('/api/state')).data.form.uploads;
+  assert.deepEqual(mine.map((u) => [u.key, u.count]), [['derech', 0], ['safety', 0], ['klia', 1], ['hadracha', 0], ['cars', 2]]);
+  // the מג״ד sees everything
+  assert.equal((await admin.get('/api/state')).data.forms.find((f) => f.company === 'ב').uploads.find((u) => u.key === 'cars').count, 2);
+  // the רכב officer sees only צילומי רכבים; קל״ג sees none
+  const rechevView = (await officers.rechev.get('/api/state')).data.uploads['ב'];
+  assert.deepEqual(rechevView.map((u) => u.key), ['cars']);
+  assert.equal((await officers.lag.get('/api/state')).data.uploads['ב'], undefined);
+
+  // the file itself
+  const fileGet = async (who, id) => { const r = await who.raw(`/api/files/${id}`); return r.status; };
+  assert.equal(await fileGet(companies['ב'], a1.data.id), 200);
+  assert.equal(await fileGet(admin, a1.data.id), 200);
+  assert.equal(await fileGet(officers.rechev, a1.data.id), 200);
+  assert.equal(await fileGet(officers.rechev, p1.data.id), 404);   // קליעה, not his
+  assert.equal(await fileGet(officers.klia, p1.data.id), 200);
+  assert.equal(await fileGet(companies['ג'], a1.data.id), 404);
+
+  // delete: the company (this week) or the מג״ד; not others
+  assert.equal((await companies['ג'].post(`/api/uploads/${a1.data.id}/delete`)).status, 403);
+  assert.equal((await companies['ב'].post(`/api/uploads/${a1.data.id}/delete`)).status, 200);
+  assert.equal(await fileGet(admin, a1.data.id), 404);
+  assert.equal((await companies['ב'].get('/api/state')).data.form.uploads.find((u) => u.key === 'cars').count, 1);
 });
 
 test('profile: name and phone; password change logs out other sessions', async () => {

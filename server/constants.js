@@ -54,3 +54,14 @@ export const canManageUsers = (u) => !!u && (u.kind === 'admin' || roleKeysOf(u)
 
 export const KINDS = ['admin', 'officer', 'company', 'pending'];
 export const KIND_LABEL = { admin: 'מנהל — מג״ד', officer: 'קצין מטה', company: 'משתמש פלוגתי', pending: 'ממתין לשיוך' };
+
+// Weekly uploads: besides the signatures, every company uploads photos / PDF files for these items each week.
+// owner = the area whose officer sees them (the מג״ד sees all; the company sees its own).
+export const UPLOADS = [
+  { key: 'derech', label: 'נוהל דרך המלך', owner: 'samgad' },
+  { key: 'safety', label: 'מעקבי בטיחות', owner: 'samgad' },
+  { key: 'klia', label: 'מעקבי קליעה', owner: 'klia' },
+  { key: 'hadracha', label: 'מעקבי הדרכה', owner: 'hadracha' },
+  { key: 'cars', label: 'צילומי רכבים', owner: 'rechev' },
+];
+export const UPLOAD = Object.fromEntries(UPLOADS.map((u) => [u.key, u]));

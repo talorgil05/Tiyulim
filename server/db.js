@@ -79,6 +79,26 @@ CREATE TABLE IF NOT EXISTS user_roles (
   PRIMARY KEY (user_id, role_key)
 );
 
+-- Weekly uploads: every week each company uploads photos / PDF files for a few fixed items (see UPLOADS in
+-- constants.js). Several files per item. The file data is removed after 60 days; the record stays.
+CREATE TABLE IF NOT EXISTS week_files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  round_id INTEGER NOT NULL REFERENCES rounds(id),
+  company_key TEXT NOT NULL,
+  item_key TEXT NOT NULL,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  uploader_name TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('image','pdf')),
+  mime TEXT NOT NULL,
+  name TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  data BLOB,
+  created_at TEXT NOT NULL,
+  purged_at TEXT,
+  deleted_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_week_files ON week_files(round_id, company_key, item_key);
+
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
