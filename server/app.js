@@ -52,8 +52,16 @@ const publicUser = (u) => {
     id: u.id, full_name: u.full_name, phone: u.phone, kind: u.kind, kind_label: KIND_LABEL[u.kind],
     role_key: keys[0] ?? null, role_keys: keys, role_label: keys.length ? keys.map((k) => ROLE_LABEL[k]).join(' + ') : null,
     company_key: u.company_key, active: !!u.active, created_at: u.created_at, onboarded: !!u.onboarded_at, can_manage_users: canManageUsers(u),
+    request: requestOf(u),
   };
 };
+/** The role a pending user asked for at registration (null once he got a permission). */
+function requestOf(u) {
+  if (u.kind !== 'pending' || !u.req_kind) return null;
+  if (u.req_kind === 'company') return { kind: 'company', company_key: u.req_company, label: u.req_company === 'מפקדה' ? 'מפקדה' : `פלוגה ${u.req_company}` };
+  const keys = ROLE_KEYS.filter((k) => String(u.req_roles || '').split(',').includes(k));
+  return { kind: 'officer', role_keys: keys, label: keys.map((k) => ROLE_LABEL[k]).join(' + ') };
+}
 /** Areas in the fixed display order. */
 const sortRoles = (keys) => ROLE_KEYS.filter((k) => keys.includes(k));
 
@@ -248,9 +256,21 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
     if (registerLimiter.blocked(ip)) throw new HttpError(429, 'יותר מדי ניסיונות הרשמה. נסו שוב מאוחר יותר', 'rate');
     registerLimiter.fail(ip);
     const data = { full_name: fullName(body.full_name), phone: phone10(body.phone), password: password(body.password) };
+    const wantsSetup = typeof body.setup_code === 'string' && body.setup_code.trim() !== '';
+    let ask = { kind: null, roles: null, company: null };
+    if (!wantsSetup) {
+      if (body.request_kind === 'officer') {
+        const keys = sortRoles([...new Set((Array.isArray(body.role_keys) ? body.role_keys : []).map(roleKey))]);
+        if (!keys.length) throw bad('יש לבחור לפחות תחום אחד', 'request');
+        ask = { kind: 'officer', roles: keys.join(','), company: null };
+      } else if (body.request_kind === 'company') {
+        ask = { kind: 'company', roles: null, company: companyKey(body.company_key) };
+      } else {
+        throw bad('יש לבחור אם את/ה קצין מטה או משתמש פלוגתי', 'request');
+      }
+    }
     if (await db.get('SELECT 1 AS x FROM users WHERE full_name = ?', data.full_name)) throw conflict(NAME_TAKEN_MSG, 'name_taken');
     const hash = await hashPassword(data.password);
-    const wantsSetup = typeof body.setup_code === 'string' && body.setup_code.trim() !== '';
     let id;
     try {
       id = await db.tx(async (t) => {
@@ -261,8 +281,8 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
           if (!codeMatches(body.setup_code)) { setupLimiter.fail(ip); throw new HttpError(403, 'קוד ההקמה שגוי', 'bad_setup_code'); }
           kind = 'admin';
         }
-        return (await t.run('INSERT INTO users (full_name, phone, password_hash, kind, created_at) VALUES (?, ?, ?, ?, ?)',
-          data.full_name, data.phone, hash, kind, nowIso())).lastInsertRowid;
+        return (await t.run('INSERT INTO users (full_name, phone, password_hash, kind, created_at, req_kind, req_roles, req_company) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          data.full_name, data.phone, hash, kind, nowIso(), ask.kind, ask.roles, ask.company)).lastInsertRowid;
       });
     } catch (e) {
       if (String(e.message).includes('UNIQUE')) throw conflict(NAME_TAKEN_MSG, 'name_taken');
@@ -565,6 +585,7 @@ export async function createHandler({ dbUrl, authToken, setupCode, clock = () =>
         const ck = kind === 'company' ? companyKey(body.company_key) : null;
         if (kind !== 'admin') await guardLastAdmin(t, u);
         await t.run('UPDATE users SET kind = ?, role_key = ?, company_key = ? WHERE id = ?', kind, rks[0] ?? null, ck, u.id);
+        if (kind !== 'pending') await t.run('UPDATE users SET req_kind = NULL, req_roles = NULL, req_company = NULL WHERE id = ?', u.id);
         await t.run('DELETE FROM user_roles WHERE user_id = ?', u.id);
         for (const k of rks) await t.run('INSERT INTO user_roles (user_id, role_key) VALUES (?, ?)', u.id, k);
       }

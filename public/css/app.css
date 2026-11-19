@@ -422,3 +422,16 @@ html[data-theme="dark"] .pdf-overlay { background: rgba(14,21,36,.96); color: #E
 .week-tab[aria-selected="true"] { background: var(--navy); border-color: var(--navy); color: var(--on-strong); }
 .week-tab.late { border-color: var(--orange); }
 .week-tab.late[aria-selected="true"] { background: var(--orange-ink); border-color: var(--orange-ink); color: #fff; }
+
+/* ---------- registration: who am I (a request the מג״ד approves) ---------- */
+.who-am-i { border: 0; padding: 0; margin: 0 0 .9rem; }
+.who-am-i legend { font-weight: 600; font-size: .95rem; margin-bottom: .3rem; }
+.who-pick { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; margin-bottom: .5rem; }
+.who-pick label { position: relative; }
+.who-pick input { position: absolute; opacity: 0; }
+.who-pick span { display: grid; place-items: center; min-height: 46px; border: 2px solid var(--navy-line); border-radius: 12px; font-weight: 700; cursor: pointer; color: var(--navy); background: var(--card); }
+.who-pick input:checked + span { background: var(--navy); border-color: var(--navy); color: var(--on-strong); }
+.who-pick input:focus-visible + span { outline: 3px solid var(--orange); outline-offset: 2px; }
+.who-am-i .area-pick { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); max-height: 260px; overflow: auto; padding: 2px; }
+.req-line { background: var(--card); border: 1px dashed var(--orange); border-radius: 10px; padding: .35rem .6rem; font-size: .92rem; }
+.btn-ok-solid { background: #157F3D; border-color: #157F3D; color: #fff; }

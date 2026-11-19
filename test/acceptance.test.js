@@ -43,6 +43,7 @@ const officers = {};   // role key → client
 const companies = {};  // company → client
 
 const PW = 'password1';
+const AS_CO = { request_kind: 'company', company_key: 'א' };
 let phoneN = 0;
 const nextPhone = () => `05${String(10000000 + phoneN++).padStart(8, '0')}`;
 const users = async () => (await admin.get('/api/users')).data.users;
@@ -50,19 +51,30 @@ const idOf = async (name) => (await users()).find((u) => u.full_name === name).i
 
 test('registration: full name + phone; validation; the new account is pending', async () => {
   const c = client();
-  assert.equal((await c.post('/api/auth/register', { full_name: 'א', phone: nextPhone(), password: PW })).status, 400);          // name too short
-  assert.equal((await c.post('/api/auth/register', { full_name: 'דני לוי', phone: '123', password: PW })).status, 400);          // phone
-  assert.equal((await c.post('/api/auth/register', { full_name: 'דני לוי', phone: nextPhone(), password: 'short' })).status, 400); // password
-  const ok = await c.post('/api/auth/register', { full_name: '  דני   לוי ', phone: '050-123 4567', password: PW });
+  assert.equal((await c.post('/api/auth/register', { full_name: 'א', phone: nextPhone(), password: PW, ...AS_CO })).status, 400);          // name too short
+  assert.equal((await c.post('/api/auth/register', { full_name: 'דני לוי', phone: '123', password: PW, ...AS_CO })).status, 400);          // phone
+  assert.equal((await c.post('/api/auth/register', { full_name: 'דני לוי', phone: nextPhone(), password: 'short', ...AS_CO })).status, 400); // password
+  const ok = await c.post('/api/auth/register', { full_name: '  דני   לוי ', phone: '050-123 4567', password: PW, ...AS_CO });
   assert.equal(ok.status, 200);
   assert.equal(ok.data.user.full_name, 'דני לוי');
   assert.equal(ok.data.user.phone, '0501234567');
   assert.equal(ok.data.user.kind, 'pending');
+  assert.deepEqual(ok.data.user.request, { kind: 'company', company_key: 'א', label: 'פלוגה א' });
+  // "who are you" is required, and must be valid
+  assert.equal((await client().post('/api/auth/register', { full_name: 'בלי בחירה', phone: nextPhone(), password: PW })).data.code, 'request');
+  assert.equal((await client().post('/api/auth/register', { full_name: 'בלי תחום', phone: nextPhone(), password: PW, request_kind: 'officer', role_keys: [] })).data.code, 'request');
+  assert.equal((await client().post('/api/auth/register', { full_name: 'תחום שגוי', phone: nextPhone(), password: PW, request_kind: 'officer', role_keys: ['nope'] })).status, 400);
+  assert.equal((await client().post('/api/auth/register', { full_name: 'פלוגה שגויה', phone: nextPhone(), password: PW, request_kind: 'company', company_key: 'ז' })).status, 400);
+  const two = await client().post('/api/auth/register', { full_name: 'שני תחומים', phone: nextPhone(), password: PW, request_kind: 'officer', role_keys: ['tikshuv', 'hadracha', 'tikshuv'] });
+  assert.deepEqual(two.data.user.request.role_keys, ['hadracha', 'tikshuv']);
+  assert.equal(two.data.user.request.label, 'הדרכה + תקשוב');
   // a kind sent in the request is ignored
-  const sneaky = await client().post('/api/auth/register', { full_name: 'מנסה להיות מגד', phone: nextPhone(), password: PW, kind: 'admin' });
-  assert.equal(sneaky.data.user.kind, 'pending');
+  const sneaky = await client().post('/api/auth/register', { full_name: 'מנסה להיות מגד', phone: nextPhone(), password: PW, kind: 'admin', request_kind: 'admin' });
+  assert.equal(sneaky.data.code, 'request');   // מג״ד can't be requested
+  const sneaky2 = await client().post('/api/auth/register', { full_name: 'מנסה להיות מגד', phone: nextPhone(), password: PW, kind: 'admin', ...AS_CO });
+  assert.equal(sneaky2.data.user.kind, 'pending');
   // the name is the login name, so it is unique (case/space-insensitive)
-  assert.equal((await client().post('/api/auth/register', { full_name: 'דני לוי', phone: nextPhone(), password: PW })).data.code, 'name_taken');
+  assert.equal((await client().post('/api/auth/register', { full_name: 'דני לוי', phone: nextPhone(), password: PW, ...AS_CO })).data.code, 'name_taken');
   // pending: no forms, no signing
   assert.deepEqual((await c.get('/api/state')).data, { pending: true });
   assert.equal((await c.post('/api/sign', { company: 'א' })).status, 403);
@@ -85,14 +97,17 @@ test('first מג״ד: register with the one-time setup code', async () => {
 test('everyone registers; the מג״ד assigns each a role or company; others cannot', async () => {
   for (const r of ROLES) {
     officers[r.key] = client();
-    assert.equal((await officers[r.key].post('/api/auth/register', { full_name: `קצין ${r.label}`, phone: nextPhone(), password: PW })).status, 200);
+    assert.equal((await officers[r.key].post('/api/auth/register', { full_name: `קצין ${r.label}`, phone: nextPhone(), password: PW, request_kind: 'officer', role_keys: [r.key] })).status, 200);
   }
   for (const c of COMPANIES) {
     companies[c] = client();
-    assert.equal((await companies[c].post('/api/auth/register', { full_name: `רס״פ ${c}`, phone: nextPhone(), password: PW })).status, 200);
+    assert.equal((await companies[c].post('/api/auth/register', { full_name: `רס״פ ${c}`, phone: nextPhone(), password: PW, request_kind: 'company', company_key: c })).status, 200);
   }
   const list = await users();
   assert.equal(list[0].kind, 'pending');   // pending first
+  const asked = list.find((u) => u.full_name === 'קצין רכב');
+  assert.deepEqual(asked.request.role_keys, ['rechev']);
+  assert.equal(list.find((u) => u.full_name === 'רס״פ 601').request.company_key, '601');
   for (const r of ROLES) {
     const res = await admin.patch(`/api/users/${list.find((u) => u.full_name === `קצין ${r.label}`).id}`, { kind: 'officer', role_key: r.key });
     assert.equal(res.status, 200, res.data?.error);
@@ -108,6 +123,7 @@ test('everyone registers; the מג״ד assigns each a role or company; others ca
   // nobody else can change permissions
   assert.equal((await officers.rechev.patch(`/api/users/${someone}`, { kind: 'admin' })).status, 403);
   assert.equal((await companies['א'].get('/api/users')).status, 403);
+  assert.equal((await users()).find((u) => u.full_name === 'קצין רכב').request, null);   // approved: no request left
   // the officer's own session now sees the officer screen
   assert.ok(Array.isArray((await officers.rechev.get('/api/state')).data.companies));
 });
@@ -118,7 +134,7 @@ test('תקשוב assigns every permission except מג״ד', async () => {
   assert.equal((await officers.rechev.get('/api/auth/me')).data.user.can_manage_users, false);
   assert.equal((await k.get('/api/users')).status, 200);
   const newbie = client();
-  await newbie.post('/api/auth/register', { full_name: 'חייל חדש', phone: nextPhone(), password: PW });
+  await newbie.post('/api/auth/register', { full_name: 'חייל חדש', phone: nextPhone(), password: PW, ...AS_CO });
   const id = await idOf('חייל חדש');
   // allowed: officer, company, back to pending
   assert.equal((await k.patch(`/api/users/${id}`, { kind: 'company', company_key: 'ב' })).status, 200);
@@ -230,7 +246,7 @@ test('הכש״י / הכש״מ areas sign only for their own companies', async ()
 
 test('one person can hold several areas; each signs only in its own name', async () => {
   const multi = client();
-  await multi.post('/api/auth/register', { full_name: 'רב תפקידים', phone: nextPhone(), password: PW });
+  await multi.post('/api/auth/register', { full_name: 'רב תפקידים', phone: nextPhone(), password: PW, ...AS_CO });
   const id = await idOf('רב תפקידים');
   assert.equal((await admin.patch(`/api/users/${id}`, { kind: 'officer', role_keys: [] })).status, 400);
   const res = await admin.patch(`/api/users/${id}`, { kind: 'officer', role_keys: ['hadracha', 'tikshuv'] });
@@ -446,5 +462,5 @@ test('deactivate, reset password, delete (history keeps the name)', async () => 
   const old = (await admin.get(`/api/rounds/${hist[hist.length - 1].id}`)).data;
   assert.equal(old.forms.find((f) => f.company === 'א').areas.find((r) => r.key === 'rechev').items[0].signer_name, 'קצין רכב');
   // the name is free again
-  assert.equal((await client().post('/api/auth/register', { full_name: 'קצין רכב', phone: nextPhone(), password: PW })).status, 200);
+  assert.equal((await client().post('/api/auth/register', { full_name: 'קצין רכב', phone: nextPhone(), password: PW, ...AS_CO })).status, 200);
 });

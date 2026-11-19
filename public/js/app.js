@@ -186,7 +186,22 @@ async function renderLogin(mode = 'login') {
             ${reg ? '<span class="hint">השם המלא הוא גם שם הכניסה שלך</span>' : ''}</div>
           ${reg ? `<div class="field"><label for="f-phone">טלפון</label>
             <input id="f-phone" name="phone" type="tel" inputmode="numeric" autocomplete="tel" maxlength="12" placeholder="05XXXXXXXX" required>
-            <span class="hint">10 ספרות</span></div>` : ''}
+            <span class="hint">10 ספרות</span></div>
+          <fieldset class="field who-am-i">
+            <legend>מי אני</legend>
+            <div class="who-pick">
+              <label><input type="radio" name="request_kind" value="officer"><span>קצין מטה</span></label>
+              <label><input type="radio" name="request_kind" value="company"><span>משתמש פלוגתי</span></label>
+            </div>
+            <div data-req="officer" hidden>
+              <span class="hint">סמנו את התחום שלכם (אפשר יותר מאחד)</span>
+              <div class="area-pick">${meta.roles.map((r) => `<label class="area-chk"><input type="checkbox" name="role_keys" value="${esc(r.key)}"><span>${esc(r.label)}</span></label>`).join('')}</div>
+            </div>
+            <div data-req="company" hidden>
+              <label class="sr-only" for="f-co">פלוגה</label>
+              <select id="f-co" name="company_key"><option value="">בחרו פלוגה…</option>${meta.companies.map((c) => `<option value="${esc(c)}">${esc(coName(c))}</option>`).join('')}</select>
+            </div>
+          </fieldset>` : ''}
           <div class="field"><label for="f-pw">סיסמה</label>
             <input id="f-pw" name="password" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" required>
             ${reg ? '<span class="hint">לפחות 8 תווים</span>' : ''}</div>
@@ -195,7 +210,7 @@ async function renderLogin(mode = 'login') {
           ${reg && setupOpen ? `<details class="field"><summary class="small muted">יש לי קוד הקמה (מג״ד ראשון)</summary>
             <input id="f-code" name="setup_code" type="password" autocomplete="off" aria-label="קוד הקמה" style="margin-top:.5rem"></details>` : ''}
           <button class="btn btn-primary btn-big btn-block" type="submit">${reg ? 'הרשמה' : 'כניסה'}</button>
-          ${reg ? '<p class="small muted" style="margin:.7rem 0 0;text-align:center">אחרי ההרשמה המג״ד ישייך אותך לתפקיד או לפלוגה.</p>' : ''}
+          ${reg ? '<p class="small muted" style="margin:.7rem 0 0;text-align:center">הבחירה שלך נשלחת כבקשה — המג״ד יאשר אותה לפני שתוכלו לחתום או לצפות.</p>' : ''}
         </form>
       </div>
       <div class="landing-links">
@@ -210,6 +225,9 @@ async function renderLogin(mode = 'login') {
   app.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => renderLogin(b.dataset.go)));
   app.querySelector('[data-install-guide]').addEventListener('click', openInstallGuide);
   form.querySelector('#f-name').focus();
+  form.querySelectorAll('input[name=request_kind]').forEach((r) => r.addEventListener('change', () => {
+    form.querySelectorAll('[data-req]').forEach((el) => { el.hidden = el.dataset.req !== r.value; });
+  }));
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     err.hidden = true;
@@ -221,6 +239,12 @@ async function renderLogin(mode = 'login') {
       if ((fd.password || '').length < 8) return showErr('סיסמה חייבת להכיל לפחות 8 תווים');
       if (fd.password !== fd.password2) return showErr('הסיסמאות אינן תואמות');
       delete fd.password2;
+      fd.role_keys = [...form.querySelectorAll('input[name=role_keys]:checked')].map((c) => c.value);
+      if (!fd.setup_code) {
+        if (!fd.request_kind) return showErr('יש לבחור אם את/ה קצין מטה או משתמש פלוגתי');
+        if (fd.request_kind === 'officer' && !fd.role_keys.length) return showErr('יש לסמן לפחות תחום אחד');
+        if (fd.request_kind === 'company' && !fd.company_key) return showErr('יש לבחור פלוגה');
+      }
     }
     return busy(form.querySelector('[type=submit]'), async () => {
       try {
@@ -298,10 +322,11 @@ function renderPending() {
       <section class="panel pending-hero">
         <div class="big-mark" aria-hidden="true">⏳</div>
         <h1 style="color:var(--navy)">נרשמת בהצלחה</h1>
-        <p><b>ממתין לשיוך על ידי המג״ד.</b><br>ברגע שהמג״ד ישייך אותך לתפקיד או לפלוגה, המסך הזה יתחלף לבד — אין צורך לרענן.</p>
+        <p><b>${me.request ? 'הבקשה שלך ממתינה לאישור המג״ד.' : 'ממתין לשיוך על ידי המג״ד.'}</b><br>ברגע שהמג״ד יאשר, המסך הזה יתחלף לבד — אין צורך לרענן.</p>
         <dl class="kv" style="text-align:start;max-width:320px;margin:1rem auto 0">
           <dt>שם</dt><dd>${esc(me.full_name)}</dd>
           <dt>טלפון</dt><dd class="ltr">${esc(me.phone || '—')}</dd>
+          ${me.request ? `<dt>ביקשת</dt><dd>${esc(me.request.kind === 'officer' ? `קצין מטה · ${me.request.label}` : me.request.label)}</dd>` : ''}
         </dl>
       </section>
       <section class="panel">

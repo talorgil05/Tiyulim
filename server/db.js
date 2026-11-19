@@ -171,6 +171,15 @@ async function migrateWeeksV4(db) {
   }
   const sigCols = (await db.all('PRAGMA table_info(signatures)')).map((c) => c.name);
   if (!sigCols.includes('by_admin')) await db.exec('ALTER TABLE signatures ADD COLUMN by_admin INTEGER NOT NULL DEFAULT 0;');
+  // v6: at registration a user says who he is (staff areas, or a company) — a request until the מג״ד approves it
+  const userCols = (await db.all('PRAGMA table_info(users)')).map((c) => c.name);
+  if (!userCols.includes('req_kind')) {
+    await db.exec(`
+      ALTER TABLE users ADD COLUMN req_kind TEXT;
+      ALTER TABLE users ADD COLUMN req_roles TEXT;
+      ALTER TABLE users ADD COLUMN req_company TEXT;
+    `);
+  }
 }
 
 function runRebuild(client) {

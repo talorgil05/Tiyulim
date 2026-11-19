@@ -49,7 +49,9 @@ export async function renderUsers(ctx) {
           <span class="tag ${u.kind === 'pending' ? 'pend' : ''}">${esc(kindText(u))}</span>
           ${u.active ? '' : '<span class="tag off">מושבת</span>'}</div>
         <div class="user-meta"><span>📱 ${phoneLink(u.phone)}</span><span>נרשם ${esc(fmtStamp(u.created_at))}</span></div>
+        ${u.request && u.active ? `<div class="req-line">🙋 ביקש: <b>${esc(u.request.kind === 'officer' ? `קצין מטה · ${u.request.label}` : u.request.label)}</b></div>` : ''}
         <div class="btn-row">
+          ${u.request && u.active && canEdit(u) ? '<button type="button" class="btn btn-sm btn-ok-solid" data-approve-req>✓ אישור הבקשה</button>' : ''}
           ${canEdit(u) ? '<button type="button" class="btn btn-sm btn-primary" data-perm>שינוי הרשאה</button>' : ''}
           ${isAdmin && u.id !== me.id ? `<button type="button" class="btn btn-sm ${u.active ? 'btn-danger' : ''}" data-toggle>${u.active ? 'השבתה' : 'הפעלה'}</button>` : ''}
           ${canEdit(u) ? '<button type="button" class="btn btn-sm" data-reset>איפוס סיסמה</button>' : ''}
@@ -137,6 +139,15 @@ export async function renderUsers(ctx) {
     if (!card) return;
     const u = users.find((x) => x.id === Number(card.dataset.user));
     if (e.target.closest('[data-perm]')) return openPermissions(u);
+    const ok = e.target.closest('[data-approve-req]');
+    if (ok) {
+      const r = u.request;
+      const body = r.kind === 'officer' ? { kind: 'officer', role_keys: r.role_keys } : { kind: 'company', company_key: r.company_key };
+      return busy(ok, async () => {
+        try { const { user } = await api.patch(`/api/users/${u.id}`, body); toast(`${user.full_name}: ${kindText(user)} ✓`, 'ok'); reload(); }
+        catch (ex) { toast(ex.message, 'error'); }
+      });
+    }
     if (e.target.closest('[data-delete]')) return deleteUser(u);
     const tog = e.target.closest('[data-toggle]');
     if (tog) {
